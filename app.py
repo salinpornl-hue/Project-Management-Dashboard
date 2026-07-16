@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 1. Page Configuration
 # ==========================================
-st.set_page_config(page_title="BuildPM | Split-View Advanced", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="BuildPM | Advanced Split-View", layout="wide", page_icon="🏗️")
 
 # ==========================================
 # 2. GitHub Secrets & Setup
@@ -54,14 +54,16 @@ def calc_progress_from_checklist(body, state):
     return 100.0 if state == "closed" else 0.0
 
 # ==========================================
-# 4. Fetch Base Data & UI Toolbar
+# 4. Fetch Base Data
 # ==========================================
 tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
-st.markdown("### 🏗️ BuildPM - Advanced Gantt & Tracking")
+# ==========================================
+# 5. UI: Top Toolbar (Main Controls)
+# ==========================================
+st.markdown("### 🏗️ BuildPM - Advanced Project Tracking")
 
-# เพิ่ม UI สำหรับเลือกวัน CUT-OFF และ TARGET 
 t_col1, t_col2, t_col3, t_col4, t_col5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...")
@@ -85,7 +87,7 @@ with t_col5:
 st.markdown("---")
 
 # ==========================================
-# 5. Data Processing (คำนวณแยก 2 แบบ: Table & Gantt)
+# 6. Data Processing (คำนวณและสร้าง UNIQUE_TASK)
 # ==========================================
 df_data = []
 gantt_data = []
@@ -99,11 +101,9 @@ if issues_only:
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
         
-        # คำนวณวันทั้งหมด และวันที่ผ่านมาแล้ว (เทียบกับ CUT-OFF)
         total_days = (end_date - start_date).days + 1
         elapsed_days = (cut_off_date - start_date).days + 1
         
-        # % PLAN (ไม่ให้น้อยกว่า 0 และไม่เกิน 100)
         if total_days > 0:
             plan_pct = max(0.0, min(100.0, (elapsed_days / total_days) * 100))
         else:
@@ -112,7 +112,6 @@ if issues_only:
         act_pct = calc_progress_from_checklist(body, state)
         fut_pct = 100.0 - plan_pct
         
-        # วิเคราะห์ STATUS แบบอัตโนมัติ
         if state == 'closed':
             status = "COMPLETED"
         elif act_pct < plan_pct:
@@ -120,11 +119,13 @@ if issues_only:
         else:
             status = "ON TRACK"
 
-        # -------------------------------------
-        # ชุดข้อมูลสำหรับตาราง (Table Data)
-        # -------------------------------------
+        # 💡 สร้าง UNIQUE_TASK เพื่อป้องกัน Plotly ยุบรวมแถวที่มีชื่อซ้ำกัน
+        unique_name = f"{task['number']} - {task['title']}"
+
+        # --- ชุดข้อมูลสำหรับตาราง (Table Data) ---
         df_data.append({
             "ID": task['number'],
+            "UNIQUE_TASK": unique_name,
             "WBS": str(i+1),
             "TASK NAME": task['title'],
             "START": start_date,
@@ -138,25 +139,18 @@ if issues_only:
             "_raw_body": body 
         })
         
-        # -------------------------------------
-        # ชุดข้อมูลสำหรับกราฟ (Gantt Data - การหั่น 2 สี)
-        # -------------------------------------
+        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data - การหั่น 2 สี) ---
         if end_date <= cut_off_date:
-            # จบก่อนวัน Cut-off = อดีตทั้งหมด (สีฟ้า)
-            gantt_data.append({"TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Elapsed", "_raw_start": start_date})
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Elapsed", "_raw_start": start_date})
         elif start_date > cut_off_date:
-            # เริ่มหลังวัน Cut-off = อนาคตทั้งหมด (สีเขียว)
-            gantt_data.append({"TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
         else:
-            # คาบเกี่ยววัน Cut-off = ต้องหั่นแท่งกราฟเป็น 2 ท่อน
-            gantt_data.append({"TASK NAME": task['title'], "START": start_date, "FINISH": cut_off_date, "STAGE": "Elapsed", "_raw_start": start_date})
-            
-            # ท่อนที่ 2 บวกไปอีก 1 วันเพื่อไม่ให้กราฟวาดซ้อนทับกันตรงรอยต่อเป๊ะๆ (ขึ้นอยู่กับการเรนเดอร์ของ Plotly)
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": cut_off_date, "STAGE": "Elapsed", "_raw_start": start_date})
             next_day = cut_off_date + timedelta(days=1)
             if next_day <= end_date:
-                gantt_data.append({"TASK NAME": task['title'], "START": next_day, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
+                gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": next_day, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
 
-    # สรุป Dataframe
+    # สรุป Dataframe และเรียงลำดับ
     df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True)
     df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True)
     
@@ -166,23 +160,39 @@ if issues_only:
         df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
     if task_filter != "All":
         df = df[df["STATUS"] == task_filter]
-        # กรอง df_gantt ให้เหลือเฉพาะ Task ที่ผ่านเงื่อนไข Filter
-        valid_tasks = df["TASK NAME"].tolist()
-        df_gantt = df_gantt[df_gantt["TASK NAME"].isin(valid_tasks)]
-        
-    df_display = df.drop(columns=["_raw_start", "_raw_body"])
+        valid_tasks = df["UNIQUE_TASK"].tolist()
+        df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
-# 6. Render Split-View UI
+# 7. UI: Zoom Controls (Time-Axis Scaling)
 # ==========================================
 if not df.empty:
+    st.markdown("##### 🔎 จัดการมุมมองเวลา (Zoom / Time Scaling)")
+    z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
+    
+    # ค่าเริ่มต้นสำหรับ Zoom: เอาวันที่เริ่มก่อนสุด และจบหลังสุดมาแสดง
+    default_view_start = df["START"].min() - timedelta(days=2)
+    default_view_end = df["FINISH"].max() + timedelta(days=2)
+    
+    with z_col1:
+        view_start = st.date_input("🗓️ ซูมตั้งแต่ (View Start)", value=default_view_start)
+    with z_col2:
+        view_end = st.date_input("🗓️ จนถึง (View End)", value=default_view_end)
+
+# ==========================================
+# 8. Render Split-View UI
+# ==========================================
+if not df.empty:
+    # ตัดคอลัมน์ที่ใช้ประมวลผลออก ก่อนแสดงในตาราง
+    df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"])
+
     ROW_HEIGHT = 35
     DYNAMIC_HEIGHT = max(300, (len(df) * ROW_HEIGHT) + 42)
 
-    left_col, right_col = st.columns([0.5, 0.5])
+    left_col, right_col = st.columns([0.45, 0.55])
     
     with left_col:
-        # ตารางฝั่งซ้าย
+        # [ฝั่งซ้าย] Data Editor (ตารางข้อมูล)
         edited_df = st.data_editor(
             df_display,
             key="task_editor",
@@ -190,47 +200,50 @@ if not df.empty:
             use_container_width=True,
             height=DYNAMIC_HEIGHT,
             column_config={
-                "ID": st.column_config.NumberColumn("ID", disabled=True),
-                "WBS": st.column_config.TextColumn("WBS", disabled=True),
+                "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "WBS": st.column_config.TextColumn("WBS", disabled=True, width="small"),
                 "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"),
                 "START": st.column_config.DateColumn("START", format="DD MMM YYYY"),
                 "FINISH": st.column_config.DateColumn("FINISH", format="DD MMM YYYY"),
                 "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
                 "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
                 "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
-                "STATUS": st.column_config.TextColumn("STATUS", disabled=True), # ให้ระบบคำนวณเองห้ามแก้
+                "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
                 "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
             }
         )
 
     with right_col:
-        # กราฟฝั่งขวา (ใช้ df_gantt ที่หั่นข้อมูลแล้ว)
+        # [ฝั่งขวา] Plotly Gantt Chart
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
             x_end="FINISH", 
-            y="TASK NAME", 
+            y="UNIQUE_TASK", # 💡 ใช้ UNIQUE_TASK เป็นแกน Y เพื่อไม่ให้รวมแถวซ้ำ
             color="STAGE",
             color_discrete_map={
-                "Elapsed": "#cde0f5", # สีฟ้า (อดีต-ปัจจุบัน)
-                "Future": "#e8f5e9",  # สีเขียวอ่อน (อนาคต)
+                "Elapsed": "#cde0f5", 
+                "Future": "#e8f5e9",  
             }
         )
         
-        # เพิ่มเส้นขอบ (Borders) ให้กับแท่งกราฟเพื่อให้เหมือนในรูป
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.5)', marker_line_width=1, opacity=0.9)
         
-        fig.update_yaxes(autorange="reversed", visible=False, showgrid=False)
+        # 💡 บังคับให้เรียงแถวตามตารางเป๊ะๆ (จากบนลงล่าง)
+        ordered_tasks = df["UNIQUE_TASK"].tolist()[::-1]
+        fig.update_yaxes(categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
+        # 💡 ใส่ระบบ Zoom (จำกัดช่วงเวลาแสดงผลตาม view_start, view_end)
         fig.update_xaxes(
             side="top", 
             title=None,
             tickformat="%d %b\n%a", 
             showgrid=True, gridcolor='rgba(200, 200, 200, 0.3)',
-            dtick="86400000"
+            dtick="86400000",
+            range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
         
-        # เส้น CUT-OFF (ใช้ string .strftime เพื่อแก้ error)
+        # เส้น CUT-OFF 
         fig.add_vline(
             x=cut_off_date.strftime("%Y-%m-%d"), 
             line_width=2, 
@@ -252,8 +265,9 @@ if not df.empty:
             annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white")
         )
         
+        # 💡 ปรับ Margin บน (t=42) เพื่อชดเชยความสูงให้เท่ากับหัวตาราง Data Editor พอดี
         fig.update_layout(
-            margin=dict(l=0, r=0, t=50, b=0),
+            margin=dict(l=0, r=0, t=42, b=0),
             height=DYNAMIC_HEIGHT,
             showlegend=False,
             plot_bgcolor="white"
@@ -261,7 +275,9 @@ if not df.empty:
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # 2-Way Sync Logic (อัปเดตกลับ GitHub) - คงไว้เหมือนเดิม
+    # ==========================================
+    # 9. 2-Way Sync Logic (อัปเดตกลับ GitHub)
+    # ==========================================
     if st.session_state.task_editor["edited_rows"]:
         st.toast('กำลังซิงค์ข้อมูลกับ GitHub...', icon='🔄')
         edits = st.session_state.task_editor["edited_rows"]
