@@ -249,17 +249,18 @@ if not df.empty:
             use_container_width=True,
             height=EXACT_HEIGHT, 
             column_config={
-                # 💡 ตั้งค่าให้แก้ได้แค่ TASK NAME, START, FINISH เท่านั้น
                 "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                 "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=True, width="small"),
-                "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"), # เปิดให้แก้
-                "START": st.column_config.DateColumn("START", disabled=False, format="DD MMM YYYY"), # เปิดให้แก้
-                "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD MMM YYYY"), # เปิดให้แก้
+                "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"), 
+                "START": st.column_config.DateColumn("START", format="DD MMM YYYY"), 
+                "FINISH": st.column_config.DateColumn("FINISH", format="DD MMM YYYY"), 
                 "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
-                "% PLAN": st.column_config.ProgressColumn("% PLAN", disabled=True, format="%.2f%%", min_value=0, max_value=100),
-                "% ACT.": st.column_config.ProgressColumn("% ACT.", disabled=True, format="%.2f%%", min_value=0, max_value=100),
+                
+                # 👇 แก้ 3 บรรทัดนี้: ลบ disabled=True ออก (เพราะมันแก้ไขไม่ได้อยู่แล้ว)
+                "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
+                "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
                 "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
-                "% FUT": st.column_config.ProgressColumn("% FUT", disabled=True, format="%.2f%%", min_value=0, max_value=100),
+                "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
             }
         )
 
