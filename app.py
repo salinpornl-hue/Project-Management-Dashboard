@@ -118,17 +118,14 @@ if issues_only:
         else:
             status = "ON TRACK"
 
-        # 💡 ดึงชื่อผู้รับผิดชอบจาก GitHub
         assignees = task.get("assignees", [])
         assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else "Unassigned"
-
         unique_name = f"{task['number']} - {task['title']}"
 
-        # --- ชุดข้อมูลสำหรับตาราง (Table Data) ---
         df_data.append({
             "ID": task['number'],
             "UNIQUE_TASK": unique_name,
-            "ASSIGNEE": assignee_names, # 👈 แทนที่ WBS
+            "ASSIGNEE": assignee_names, 
             "TASK NAME": task['title'],
             "START": start_date,
             "FINISH": end_date,
@@ -141,7 +138,6 @@ if issues_only:
             "_raw_body": body 
         })
         
-        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data) ---
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
         gantt_cutoff = datetime.combine(cut_off_date, time(23, 59, 59))
@@ -166,10 +162,10 @@ if issues_only:
         df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
-# 7. UI: Zoom Controls
+# 7. UI: Bulk Edit Save Button & Zoom Controls
 # ==========================================
 if not df.empty:
-    st.markdown("##### 🔎 จัดการมุมมองเวลา (Zoom / Time Scaling)")
+    st.markdown("##### 🔎 จัดการมุมมองและการแก้ไข (Controls)")
     z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
     
     default_view_start = df["START"].min() - timedelta(days=2)
@@ -180,17 +176,67 @@ if not df.empty:
     with z_col2:
         view_end = st.date_input("🗓️ จนถึง (View End)", value=default_view_end)
 
+    # 💡 ระบบแจ้งเตือนและปุ่มบันทึก Bulk Edit
+    pending_edits = st.session_state.get("task_editor", {}).get("edited_rows", {})
+    if pending_edits:
+        with z_col3:
+            st.warning(f"⚠️ คุณมีการแก้ไขที่ยังไม่ได้บันทึก {len(pending_edits)} รายการ")
+            if st.button("💾 บันทึกไปยัง GitHub", type="primary"):
+                has_error = False
+                
+                # --- ลูปตรวจสอบและส่งข้อมูล ---
+                with st.spinner("กำลังซิงค์ข้อมูล..."):
+                    for row_idx, changes in pending_edits.items():
+                        issue_id = df["ID"].iloc[row_idx]
+                        current_body = df["_raw_body"].iloc[row_idx]
+                        current_title = df["TASK NAME"].iloc[row_idx]
+                        payload = {}
+                        
+                        # 1. จัดการการแก้ไขชื่อ Task (อัปเดต Title)
+                        if "TASK NAME" in changes:
+                            payload["title"] = changes["TASK NAME"]
+                            
+                        # 2. จัดการการแก้ไขวันที่ (อัปเดต Body)
+                        if "START" in changes or "FINISH" in changes:
+                            new_start_str = str(changes.get("START", df["START"].iloc[row_idx]))
+                            new_finish_str = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
+                            
+                            # 💡 Data Validation: ป้องกันวันสิ้นสุดมาก่อนวันเริ่มต้น
+                            n_start_date = datetime.strptime(new_start_str, "%Y-%m-%d").date()
+                            n_finish_date = datetime.strptime(new_finish_str, "%Y-%m-%d").date()
+                            
+                            if n_finish_date < n_start_date:
+                                st.error(f"❌ ตรวจพบข้อผิดพลาด: งาน '{current_title}' มีวันสิ้นสุดก่อนวันเริ่มต้น! กรุณาแก้ไขให้ถูกต้อง")
+                                has_error = True
+                                continue # ข้ามแถวที่ Error ไปก่อน ไม่ส่ง API
+                            
+                            # อัปเดต Timeline ใน Body
+                            if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
+                                payload["body"] = re.sub(
+                                    r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
+                                    f"📅 **Timeline:** {new_start_str} to {new_finish_str}", current_body)
+                            else:
+                                payload["body"] = f"📅 **Timeline:** {new_start_str} to {new_finish_str}\n\n{current_body}"
+
+                        # ยิง API ทยอยอัปเดตเฉพาะงานที่ไม่มี Error
+                        if payload and not has_error:
+                            requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
+                
+                if not has_error:
+                    st.success("✅ บันทึกข้อมูลทั้งหมดสำเร็จ!")
+                    st.cache_data.clear()
+                    st.rerun()
+
 # ==========================================
 # 8. Render Split-View UI
 # ==========================================
 if not df.empty:
-    st.info("💡 **คำแนะนำ:** กรุณาหลีกเลี่ยงการกด Sort (เรียงลำดับ) ที่หัวตารางฝั่งซ้าย เนื่องจากจะทำให้กราฟฝั่งขวาแสดงแถวไม่ตรงกับตาราง")
+    st.info("💡 **คำแนะนำ:** คุณสามารถแก้ไข `TASK NAME`, `START`, `FINISH` ได้หลายรายการพร้อมกัน แล้วกดปุ่มบันทึกด้านบน (ห้ามกดเรียงลำดับที่หัวตาราง)")
     
     df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"])
 
-    # 💡 ใช้วิธีคำนวณความสูงให้ "เป๊ะ" ทุกพิกเซล เพื่อลบช่องว่าง (ไม่ใช้ max 300 แล้ว)
-    ROW_HEIGHT = 35.5 # ความสูง 1 แถวของ st.data_editor
-    HEADER_HEIGHT = 43 # ความสูงของหัวตาราง
+    ROW_HEIGHT = 35.5 
+    HEADER_HEIGHT = 43 
     EXACT_HEIGHT = int((len(df) * ROW_HEIGHT) + HEADER_HEIGHT)
 
     left_col, right_col = st.columns([0.45, 0.55])
@@ -201,18 +247,19 @@ if not df.empty:
             key="task_editor",
             hide_index=True,
             use_container_width=True,
-            height=EXACT_HEIGHT, # บังคับความสูงตาราง
+            height=EXACT_HEIGHT, 
             column_config={
+                # 💡 ตั้งค่าให้แก้ได้แค่ TASK NAME, START, FINISH เท่านั้น
                 "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=True, width="small"), # 👈 เพิ่มคอลัมน์ผู้รับผิดชอบ
-                "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"),
-                "START": st.column_config.DateColumn("START", format="DD MMM YYYY"),
-                "FINISH": st.column_config.DateColumn("FINISH", format="DD MMM YYYY"),
+                "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=True, width="small"),
+                "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"), # เปิดให้แก้
+                "START": st.column_config.DateColumn("START", disabled=False, format="DD MMM YYYY"), # เปิดให้แก้
+                "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD MMM YYYY"), # เปิดให้แก้
                 "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
-                "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
-                "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
+                "% PLAN": st.column_config.ProgressColumn("% PLAN", disabled=True, format="%.2f%%", min_value=0, max_value=100),
+                "% ACT.": st.column_config.ProgressColumn("% ACT.", disabled=True, format="%.2f%%", min_value=0, max_value=100),
                 "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
-                "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
+                "% FUT": st.column_config.ProgressColumn("% FUT", disabled=True, format="%.2f%%", min_value=0, max_value=100),
             }
         )
 
@@ -231,7 +278,6 @@ if not df.empty:
         
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.5)', marker_line_width=1, opacity=0.9)
         
-        # 💡 บังคับให้แกน Y เรียงตาม DataFrame หลักเสมอ (ป้องกันการแรนดอม)
         ordered_tasks = df["UNIQUE_TASK"].tolist()
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
@@ -244,27 +290,9 @@ if not df.empty:
             range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
         
-        fig.add_vline(
-            x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), 
-            line_width=2, 
-            line_dash="dash", 
-            line_color="#5D3FD3", 
-            annotation_text="CUT-OFF", 
-            annotation_position="top left",
-            annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=2, bordercolor="white")
-        )
-
-        fig.add_vline(
-            x=target_date.strftime("%Y-%m-%d 23:59:59"), 
-            line_width=2, 
-            line_dash="solid", 
-            line_color="#E3242B", 
-            annotation_text="TARGET", 
-            annotation_position="top right",
-            annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white")
-        )
+        fig.add_vline(x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="dash", line_color="#5D3FD3", annotation_text="CUT-OFF", annotation_position="top left", annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=2, bordercolor="white"))
+        fig.add_vline(x=target_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="solid", line_color="#E3242B", annotation_text="TARGET", annotation_position="top right", annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white"))
         
-        # 💡 บังคับความสูงและ Margin กราฟให้พอดีกับตารางฝั่งซ้ายแบบเป๊ะๆ
         fig.update_layout(
             margin=dict(l=0, r=0, t=HEADER_HEIGHT, b=0),
             height=EXACT_HEIGHT,
@@ -273,32 +301,6 @@ if not df.empty:
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-    # ==========================================
-    # 9. 2-Way Sync Logic (อัปเดตกลับ GitHub)
-    # ==========================================
-    if st.session_state.task_editor["edited_rows"]:
-        st.toast('กำลังซิงค์ข้อมูลกับ GitHub...', icon='🔄')
-        edits = st.session_state.task_editor["edited_rows"]
-        for row_idx, changes in edits.items():
-            issue_id = df["ID"].iloc[row_idx]
-            current_body = df["_raw_body"].iloc[row_idx]
-            payload = {}
-                
-            if "START" in changes or "FINISH" in changes:
-                new_start = str(changes.get("START", df["START"].iloc[row_idx]))
-                new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
-                if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
-                    payload["body"] = re.sub(
-                        r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
-                        f"📅 **Timeline:** {new_start} to {new_finish}", current_body)
-                else:
-                    payload["body"] = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
-
-            if payload:
-                requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
-        st.cache_data.clear()
-        st.rerun()
 
 else:
     st.info("ไม่มีงานในระบบ ปรับตั้งค่า GitHub หรือสร้าง Issue เพื่อเริ่มต้น")
