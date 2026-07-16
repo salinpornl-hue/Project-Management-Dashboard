@@ -168,7 +168,6 @@ if issues_only:
             "_raw_body": body 
         })
         
-        # ปรับปรุงให้ Gantt Chart วาดเป็น 1 แท่งเต็มตามสถานะจริงของตัวงาน
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
         gantt_data.append({
@@ -264,26 +263,25 @@ with left_col:
         use_container_width=True,
         num_rows="dynamic",
         height=EXACT_HEIGHT,
+        # 💡 แก้ไขจุดนี้: ย้ายการสั่งล็อกคอลัมน์ที่ไม่ต้องการให้แก้ไขมาไว้ตรงนี้แทน
+        disabled=["ID", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"],
         column_config={
-            "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small"),
-            "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"),
-            "START": st.column_config.DateColumn("START", disabled=False, format="DD/MM/YYYY", width="small"), 
-            "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD/MM/YYYY", width="small"), 
-            "DAYS": st.column_config.NumberColumn("DAYS", disabled=True, width="small"),
-            "%% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
-            # 💡 ล็อกคอลลัมน์ % ACT. เรียบร้อย ป้องกันยูสเซอร์แก้ไขข้อมูลผิดพลาด
-            "%% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small", disabled=True),
-            "STATUS": st.column_config.TextColumn("STATUS", disabled=True, width="small"),
-            "%% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "ID": st.column_config.NumberColumn("ID", width="small"),
+            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", width="small"),
+            "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"),
+            "START": st.column_config.DateColumn("START", format="DD/MM/YYYY", width="small"), 
+            "FINISH": st.column_config.DateColumn("FINISH", format="DD/MM/YYYY", width="small"), 
+            "DAYS": st.column_config.NumberColumn("DAYS", width="small"),
+            "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "STATUS": st.column_config.TextColumn("STATUS", width="small"),
+            "% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
         }
     )
 
 with right_col:
-    # 💡 เพิ่มป้ายกำกับสีที่สวยงามเหนือกราฟ เพื่อให้อ่านง่ายขึ้น
     st.markdown("##### 📅 Gantt Chart &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #81C784; padding-left:4px;'>COMPLETED</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #90CAF9; padding-left:4px;'>ON TRACK</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #EF9A9A; padding-left:4px;'>DELAY</span>", unsafe_allow_html=True)
     if not df_gantt.empty:
-        # 💡 ปรับเปลี่ยนฟิลด์สีตัวแทนแท่งกราฟจาก STAGE ไปเป็น STATUS
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
@@ -291,9 +289,9 @@ with right_col:
             y="UNIQUE_TASK", 
             color="STATUS",
             color_discrete_map={
-                "COMPLETED": "#81C784", # สีเขียวพาสเทล
-                "ON TRACK": "#90CAF9",  # สีฟ้าพาสเทล
-                "DELAY": "#EF9A9A"      # สีแดงพาสเทล 
+                "COMPLETED": "#81C784",
+                "ON TRACK": "#90CAF9",
+                "DELAY": "#EF9A9A"
             }
         )
         
