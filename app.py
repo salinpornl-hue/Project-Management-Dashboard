@@ -60,7 +60,6 @@ def calc_progress_from_checklist(body, state):
         return (checked / total) * 100
     return 100.0 if state == "closed" else 0.0
 
-# 💡 Dynamic Day Counter Engine (Supports Calendar vs Work Week)
 def calculate_days_by_mode(start, end, mode):
     if start > end:
         return 0
@@ -68,7 +67,7 @@ def calculate_days_by_mode(start, end, mode):
         working_days = 0
         current = start
         while current <= end:
-            if current.weekday() < 5:  # 0 to 4 represent Monday to Friday
+            if current.weekday() < 5:  # Monday to Friday
                 working_days += 1
             current += timedelta(days=1)
         return working_days
@@ -100,7 +99,6 @@ with t_col3:
 with t_col4:
     task_filter = st.selectbox("▽ STATUS FILTER", ["All", "ON TRACK", "DELAY", "COMPLETED"])
 with t_col5:
-    # 💡 Added Day Calculation Mode Selector Toggle
     day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
 with t_col6:
     st.markdown("<br>", unsafe_allow_html=True)
@@ -125,7 +123,6 @@ if issues_only:
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
         
-        # 💡 Apply dynamic day counting engine
         total_days = calculate_days_by_mode(start_date, end_date, day_mode)
         elapsed_days = calculate_days_by_mode(start_date, cut_off_date, day_mode)
         
@@ -330,7 +327,8 @@ with right_col:
         ordered_tasks = df["UNIQUE_TASK"].tolist()
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
-        fig.update_xaxes(
+        # 💡 Setup reactive weekend removal configs for the axis display
+        xaxes_config = dict(
             side="top", 
             title=None,
             tickformat="%d %b\n%a", 
@@ -338,6 +336,12 @@ with right_col:
             dtick="86400000",
             range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
+        
+        # If work week is chosen, strip Saturdays and Sundays from the chart completely
+        if day_mode == "5-Day (Work Week)":
+            xaxes_config["rangebreaks"] = [dict(bounds=["sat", "mon"])]
+            
+        fig.update_xaxes(**xaxes_config)
         
         fig.add_vline(x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="dash", line_color="#5D3FD3", annotation_text="CUT-OFF", annotation_position="top left", annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=2, bordercolor="white"))
         fig.add_vline(x=target_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="solid", line_color="#E3242B", annotation_text="TARGET", annotation_position="top right", annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white"))
