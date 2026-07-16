@@ -14,7 +14,6 @@ st.markdown("""
     <style>
     .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
     div[data-testid="stNotification"] { padding: 0.6rem; margin-bottom: 0.75rem; border-radius: 6px; }
-    /* ปรับแต่งแต่งสไตล์กรอบ Dashboard และตาราง */
     .stDataEditor { border: 1px solid #e0e0e0; border-radius: 6px; }
     .reportview-container .main .block-container{ max-width: 98%; }
     </style>
@@ -84,35 +83,39 @@ tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
 # ==========================================
-# 5. UI: Top Toolbar (ยุบรวมการตั้งค่าทั้งหมดให้กระชับในแถวเดียว)
+# 5. UI: Top Toolbar (เพิ่ม task_filter กลับเข้ามาและจัดสัดส่วนอย่างสมดุล)
 # ==========================================
 st.markdown("### 🏗️ BuildPM - Advanced Project Tracking")
 
-# คำนวณขอบเขตวันที่เริ่มต้นสำหรับ Zoom อัตโนมัติ
 raw_dates = [parse_dates_from_body(t.get('body', ''), t.get('created_at')) for t in issues_only] if issues_only else []
 default_start = min([datetime.strptime(d[0], "%Y-%m-%d").date() for d in raw_dates]) - timedelta(days=2) if raw_dates else TODAY_DATE - timedelta(days=5)
 default_end = max([datetime.strptime(d[1], "%Y-%m-%d").date() for d in raw_dates]) + timedelta(days=5) if raw_dates else TODAY_DATE + timedelta(days=25)
 
-# สร้างแถวปุ่มควบคุมหลักให้จัดวางอย่างพอดีสัดส่วน
-t_col1, t_col2, t_col3, t_col4, t_col5, t_col6, t_col7 = st.columns([1.8, 1.1, 1.1, 1.1, 1.1, 1.3, 1.0])
+# แถวปุ่มควบคุมแบบ 8 คอลัมน์เฉลี่ยความกว้างให้พอดีหน้าจอพอเป๊ะ
+t_col1, t_col2, t_col3, t_col4, t_col5, t_col6, t_col7, t_col8 = st.columns([1.5, 1.2, 1.1, 1.1, 1.0, 1.0, 1.3, 0.9])
 
 with t_col1:
-    search_query = st.text_input("🔍 Search tasks...", label_visibility="visible")
+    search_query = st.text_input("🔍 Search tasks...")
 with t_col2:
-    cut_off_date = st.date_input("✂️ CUT-OFF DATE", value=TODAY_DATE)
+    # 💡 กู้คืนตัวเลือกสำหรับกรองสถานะของงานกลับมาเรียบร้อยครับ
+    task_filter = st.selectbox("▽ STATUS FILTER", ["All", "ON TRACK", "DELAY", "COMPLETED"])
 with t_col3:
-    target_date = st.date_input("🎯 TARGET DATE", value=default_end - timedelta(days=3))
+    cut_off_date = st.date_input("✂️ CUT-OFF DATE", value=TODAY_DATE)
 with t_col4:
-    view_start = st.date_input("🗓️ ZOOM FROM", value=default_start)
+    target_date = st.date_input("🎯 TARGET DATE", value=default_end - timedelta(days=3))
 with t_col5:
-    view_end = st.date_input("🗓️ ZOOM TO", value=default_end)
+    view_start = st.date_input("🗓️ ZOOM FROM", value=default_start)
 with t_col6:
-    day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
+    view_end = st.date_input("🗓️ ZOOM TO", value=default_end)
 with t_col7:
-    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # ปรับตำแหน่งปุ่มให้อยู่ในระนาบเดียวกับฟิลด์กรอกข้อมูล
+    day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
+with t_col8:
+    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
     if st.button("🔄 Sync GitHub", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+
+st.markdown("---")
 
 # ==========================================
 # 6. Data Processing
@@ -191,7 +194,7 @@ if task_filter != "All" and not df.empty:
     df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
-# 7. UI: Bulk Edit Sync Notification Box (แสดงเมื่อมีการเปลี่ยนแปลงข้อมูล)
+# 7. UI: Bulk Edit Save System
 # ==========================================
 pending_changes = st.session_state.get("task_editor", {})
 edited_rows = pending_changes.get("edited_rows", {})
@@ -243,17 +246,15 @@ if total_changes > 0:
                 st.rerun()
 
 # ==========================================
-# 8. Render Split-View UI (ปรับอัตราส่วนให้พอดีสัดส่วนดูลื่นไหล)
+# 8. Render Split-View UI
 # ==========================================
 df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"]) if not df.empty else pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
 
-# 💡 คำนวณความสูงแบบพิกเซลต่อพิกเซล เพื่อให้ตารางฝั่งซ้ายและเส้นแกนของกราฟฝั่งขวาขนานตรงกันพอดี
 ROW_HEIGHT = 35.6
 HEADER_HEIGHT = 40.0
-FOOTER_HEIGHT = 41.0 # เผื่อพื้นที่ให้สำหรับปุ่มกดเพิ่มแถว (+) ด้านล่างของตารางด้วย
+FOOTER_HEIGHT = 41.0 
 EXACT_HEIGHT = int((len(df_display) * ROW_HEIGHT) + HEADER_HEIGHT + FOOTER_HEIGHT) if len(df_display) > 0 else 160
 
-# ขยายหน้ากว้างตารางฝั่งซ้ายเป็น 0.54 เพื่อเปิดมิติไม่ให้คอลัมน์ล้นออกนอกหน้าจอ
 left_col, right_col = st.columns([0.54, 0.46])
 
 with left_col:
@@ -293,11 +294,9 @@ with right_col:
         
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.9)
         
-        # จัดเรียงลำดับแถวแกน Y ให้ตรงตามระเบียบโครงสร้างของตารางและซ่อนป้ายชื่อซ้ำซ้อน
         ordered_tasks = df["UNIQUE_TASK"].tolist()
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
-        # ปรับค่ากริดและจัดแต่งแกน X ให้อยู่ด้านบนขนานเสมอกับ Header ฝั่งซ้ายพอดี
         xaxes_config = dict(
             side="top", title=None, tickformat="%d %b\n%a", 
             showgrid=True, gridcolor='rgba(220, 220, 220, 0.5)',
@@ -305,15 +304,13 @@ with right_col:
             range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
         if day_mode == "5-Day (Work Week)":
-            xaxes_config["rangebreaks"] = [dict(bounds=["sat", "mon"])] # ตัดสัดส่วนวันเสาร์-อาทิตย์ออกจากระนาบแกนกราฟอย่างสมบูรณ์
+            xaxes_config["rangebreaks"] = [dict(bounds=["sat", "mon"])]
             
         fig.update_xaxes(**xaxes_config)
         
-        # เส้นกำกับเกณฑ์วัดความคืบหน้า (Cut-Off และ Target)
         fig.add_vline(x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), line_width=1.5, line_dash="dash", line_color="#5D3FD3", annotation_text="CUT-OFF", annotation_position="top left", annotation=dict(font_size=9, font_color="white", bgcolor="#5D3FD3", borderpad=2))
         fig.add_vline(x=target_date.strftime("%Y-%m-%d 23:59:59"), line_width=1.5, line_dash="solid", line_color="#E3242B", annotation_text="TARGET", annotation_position="top right", annotation=dict(font_size=9, font_color="white", bgcolor="#E3242B", borderpad=2))
         
-        # 💡 ปรับแต่ง Margin Top ให้มีสัดส่วนสมดุลพอดีกับระยะความสูงของหัวข้อ Spreadsheet
         fig.update_layout(
             margin=dict(l=0, r=5, t=HEADER_HEIGHT - 3.0, b=FOOTER_HEIGHT),
             height=EXACT_HEIGHT,
