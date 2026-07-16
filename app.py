@@ -78,6 +78,7 @@ if issues_only:
     for i, task in enumerate(issues_only):
         body = task.get('body', '')
         start_str, end_str = parse_dates_from_body(body, task.get('created_at'))
+
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
         
@@ -105,8 +106,8 @@ if issues_only:
             "WBS": str(i+1),
             "TASK NAME": task['title'],
             "ASSIGNEE": assignees,
-            "START": start_str,
-            "FINISH": end_str,
+            "START": start_date.date(), # <--- เปลี่ยนตรงนี้ (ใส่ .date() เพื่อตัดเวลาออก)
+            "FINISH": end_date.date(),  # <--- เปลี่ยนตรงนี้ (ใส่ .date() เพื่อตัดเวลาออก)
             "DAYS": days,
             "% PLAN": f"{plan_pct:.0f}%",
             "% ACT.": f"{act_pct:.0f}%",
@@ -114,7 +115,7 @@ if issues_only:
             "LABELS": labels,
             "_raw_start": start_date 
         })
-    
+        
     df = pd.DataFrame(df_data)
     
     # 1. ใช้งาน Search
