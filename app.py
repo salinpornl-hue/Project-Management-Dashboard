@@ -6,14 +6,17 @@ import re
 from datetime import datetime, timedelta, time
 
 # ==========================================
-# 1. Page Configuration
+# 1. Page Configuration & Custom Premium CSS
 # ==========================================
 st.set_page_config(page_title="BuildPM | Project Management Dashboard", layout="wide", page_icon="🏗️")
 
 st.markdown("""
     <style>
-    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    div[data-testid="stNotification"] { padding: 0.75rem; margin-bottom: 1rem; }
+    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
+    div[data-testid="stNotification"] { padding: 0.6rem; margin-bottom: 0.75rem; border-radius: 6px; }
+    /* ปรับแต่งแต่งสไตล์กรอบ Dashboard และตาราง */
+    .stDataEditor { border: 1px solid #e0e0e0; border-radius: 6px; }
+    .reportview-container .main .block-container{ max-width: 98%; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +70,7 @@ def calculate_days_by_mode(start, end, mode):
         working_days = 0
         current = start
         while current <= end:
-            if current.weekday() < 5:  # Monday to Friday
+            if current.weekday() < 5:
                 working_days += 1
             current += timedelta(days=1)
         return working_days
@@ -81,32 +84,35 @@ tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
 # ==========================================
-# 5. UI: Top Toolbar (Main Controls)
+# 5. UI: Top Toolbar (ยุบรวมการตั้งค่าทั้งหมดให้กระชับในแถวเดียว)
 # ==========================================
 st.markdown("### 🏗️ BuildPM - Advanced Project Tracking")
 
-t_col1, t_col2, t_col3, t_col4, t_col5, t_col6 = st.columns([2, 1.2, 1.2, 1.2, 1.5, 1.1])
+# คำนวณขอบเขตวันที่เริ่มต้นสำหรับ Zoom อัตโนมัติ
+raw_dates = [parse_dates_from_body(t.get('body', ''), t.get('created_at')) for t in issues_only] if issues_only else []
+default_start = min([datetime.strptime(d[0], "%Y-%m-%d").date() for d in raw_dates]) - timedelta(days=2) if raw_dates else TODAY_DATE - timedelta(days=5)
+default_end = max([datetime.strptime(d[1], "%Y-%m-%d").date() for d in raw_dates]) + timedelta(days=5) if raw_dates else TODAY_DATE + timedelta(days=25)
+
+# สร้างแถวปุ่มควบคุมหลักให้จัดวางอย่างพอดีสัดส่วน
+t_col1, t_col2, t_col3, t_col4, t_col5, t_col6, t_col7 = st.columns([1.8, 1.1, 1.1, 1.1, 1.1, 1.3, 1.0])
+
 with t_col1:
-    search_query = st.text_input("🔍 Search tasks...")
+    search_query = st.text_input("🔍 Search tasks...", label_visibility="visible")
 with t_col2:
     cut_off_date = st.date_input("✂️ CUT-OFF DATE", value=TODAY_DATE)
 with t_col3:
-    temp_target = TODAY_DATE + timedelta(days=30)
-    if issues_only:
-        dates = [parse_dates_from_body(t.get('body', ''), t.get('created_at'))[1] for t in issues_only]
-        temp_target = datetime.strptime(max(dates), "%Y-%m-%d").date()
-    target_date = st.date_input("🎯 TARGET DATE", value=temp_target)
+    target_date = st.date_input("🎯 TARGET DATE", value=default_end - timedelta(days=3))
 with t_col4:
-    task_filter = st.selectbox("▽ STATUS FILTER", ["All", "ON TRACK", "DELAY", "COMPLETED"])
+    view_start = st.date_input("🗓️ ZOOM FROM", value=default_start)
 with t_col5:
-    day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
+    view_end = st.date_input("🗓️ ZOOM TO", value=default_end)
 with t_col6:
-    st.markdown("<br>", unsafe_allow_html=True)
+    day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
+with t_col7:
+    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # ปรับตำแหน่งปุ่มให้อยู่ในระนาบเดียวกับฟิลด์กรอกข้อมูล
     if st.button("🔄 Sync GitHub", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
-st.markdown("---")
 
 # ==========================================
 # 6. Data Processing
@@ -178,137 +184,103 @@ df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=T
 
 if search_query and not df.empty:
     df = df[df["TASK NAME"].str.contains(search_query, case=False)]
-    df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
+    df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].str.contains(search_query, case=False)]
 if task_filter != "All" and not df.empty:
     df = df[df["STATUS"] == task_filter]
     valid_tasks = df["UNIQUE_TASK"].tolist()
     df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
-# 7. UI: Bulk Edit Save Button & Zoom Controls
+# 7. UI: Bulk Edit Sync Notification Box (แสดงเมื่อมีการเปลี่ยนแปลงข้อมูล)
 # ==========================================
-st.markdown("##### 🔎 View & Editing Controls")
-z_col1, z_col2, z_col3 = st.columns([1.5, 1.5, 4])
-
-default_view_start = df["START"].min() - timedelta(days=2) if not df.empty else TODAY_DATE
-default_view_end = df["FINISH"].max() + timedelta(days=2) if not df.empty else TODAY_DATE + timedelta(days=30)
-
-with z_col1:
-    view_start = st.date_input("🗓️ Zoom View From", value=default_view_start)
-with z_col2:
-    view_end = st.date_input("🗓️ Zoom View To", value=default_view_end)
-
 pending_changes = st.session_state.get("task_editor", {})
 edited_rows = pending_changes.get("edited_rows", {})
 added_rows = pending_changes.get("added_rows", [])
 deleted_rows = pending_changes.get("deleted_rows", [])
-
 total_changes = len(edited_rows) + len(added_rows) + len(deleted_rows)
 
 if total_changes > 0:
-    with z_col3:
-        st.warning(f"⚠️ You have {total_changes} unsaved modifications pending.")
-        if st.button("💾 Save Changes to GitHub", type="primary"):
+    c_box1, c_box2 = st.columns([0.75, 0.25])
+    with c_box1:
+        st.warning(f"⚠️ **Unsaved Changes Pending:** คุณมีการเปลี่ยนแปลงข้อมูลค้างอยู่ {total_changes} รายการที่ยังไม่ได้บันทึกลง GitHub")
+    with c_box2:
+        if st.button("💾 Save Changes to GitHub", type="primary", use_container_width=True):
             has_error = False
-            
-            with st.spinner("Syncing data updates with GitHub..."):
+            with st.spinner("Saving configurations..."):
                 for row_idx in deleted_rows:
                     issue_id = df["ID"].iloc[row_idx]
                     requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json={"state": "closed"})
-
                 for new_row in added_rows:
                     title = new_row.get("TASK NAME", "Untitled Task")
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
                     finish = str(new_row.get("FINISH", TODAY_DATE.strftime("%Y-%m-%d")))
                     assignee_str = str(new_row.get("ASSIGNEE", ""))
-                    
                     body = f"📅 **Timeline:** {start} to {finish}\n\n- [ ] Checklist 1"
                     payload = {"title": title, "body": body}
-                    
                     if assignee_str.strip():
                         payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
-                        
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
-
                 for row_idx, changes in edited_rows.items():
-                    if row_idx in deleted_rows:
-                        continue
-                        
+                    if row_idx in deleted_rows: continue
                     issue_id = df["ID"].iloc[row_idx]
                     current_body = df["_raw_body"].iloc[row_idx]
-                    current_title = df["TASK NAME"].iloc[row_idx]
                     payload = {}
-                    
-                    if "TASK NAME" in changes:
-                        payload["title"] = changes["TASK NAME"]
-                        
+                    if "TASK NAME" in changes: payload["title"] = changes["TASK NAME"]
                     if "ASSIGNEE" in changes:
-                        assignee_str = changes["ASSIGNEE"]
-                        payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
-                        
+                        payload["assignees"] = [a.strip() for a in changes["ASSIGNEE"].split(",") if a.strip()]
                     if "START" in changes or "FINISH" in changes:
-                        new_start_str = str(changes.get("START", df["START"].iloc[row_idx]))
-                        new_finish_str = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
-                        
-                        n_start_date = datetime.strptime(new_start_str, "%Y-%m-%d").date()
-                        n_finish_date = datetime.strptime(new_finish_str, "%Y-%m-%d").date()
-                        
-                        if n_finish_date < n_start_date:
-                            st.error(f"❌ Validation Failed: Task '{current_title}' has a Finish Date set before its Start Date!")
-                            has_error = True
-                            continue
-                        
+                        new_start = str(changes.get("START", df["START"].iloc[row_idx]))
+                        new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
                         if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
-                            payload["body"] = re.sub(
-                                r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
-                                f"📅 **Timeline:** {new_start_str} to {new_finish_str}", current_body)
+                            payload["body"] = re.sub(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", f"📅 **Timeline:** {new_start} to {new_finish}", current_body)
                         else:
-                            payload["body"] = f"📅 **Timeline:** {new_start_str} to {new_finish_str}\n\n{current_body}"
-
-                    if payload and not has_error:
+                            payload["body"] = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
+                    if payload:
                         requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
-            
             if not has_error:
-                st.success("✅ Dashboard configuration synchronized perfectly!")
+                st.success("✅ Synchronized data successfully!")
                 st.cache_data.clear()
                 st.rerun()
 
 # ==========================================
-# 8. Render Split-View UI
+# 8. Render Split-View UI (ปรับอัตราส่วนให้พอดีสัดส่วนดูลื่นไหล)
 # ==========================================
-st.info("💡 **Tip:** Use the table footer controls (`+` icon) to add rows. Select any row and press `Delete` on your keyboard to drop a task.")
-
 df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"]) if not df.empty else pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
 
-ROW_HEIGHT = 35.5 
-HEADER_HEIGHT = 43 
-EXACT_HEIGHT = int((len(df_display) * ROW_HEIGHT) + HEADER_HEIGHT) if len(df_display) > 0 else 150
+# 💡 คำนวณความสูงแบบพิกเซลต่อพิกเซล เพื่อให้ตารางฝั่งซ้ายและเส้นแกนของกราฟฝั่งขวาขนานตรงกันพอดี
+ROW_HEIGHT = 35.6
+HEADER_HEIGHT = 40.0
+FOOTER_HEIGHT = 41.0 # เผื่อพื้นที่ให้สำหรับปุ่มกดเพิ่มแถว (+) ด้านล่างของตารางด้วย
+EXACT_HEIGHT = int((len(df_display) * ROW_HEIGHT) + HEADER_HEIGHT + FOOTER_HEIGHT) if len(df_display) > 0 else 160
 
-left_col, right_col = st.columns([0.45, 0.55])
+# ขยายหน้ากว้างตารางฝั่งซ้ายเป็น 0.54 เพื่อเปิดมิติไม่ให้คอลัมน์ล้นออกนอกหน้าจอ
+left_col, right_col = st.columns([0.54, 0.46])
 
 with left_col:
+    st.markdown("##### 📊 Task Spreadsheet Dataset")
     edited_df = st.data_editor(
         df_display,
         key="task_editor",
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
-        height=EXACT_HEIGHT if len(df_display) > 0 else None,
+        height=EXACT_HEIGHT,
         column_config={
             "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small", help="GitHub usernames separated by a comma (,)"),
+            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small"),
             "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"),
-            "START": st.column_config.DateColumn("START", disabled=False, format="DD MMM YYYY"), 
-            "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD MMM YYYY"), 
-            "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
-            "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
-            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
-            "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
-            "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
+            "START": st.column_config.DateColumn("START", disabled=False, format="DD/MM/YYYY", width="small"), 
+            "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD/MM/YYYY", width="small"), 
+            "DAYS": st.column_config.NumberColumn("DAYS", disabled=True, width="small"),
+            "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "STATUS": st.column_config.TextColumn("STATUS", disabled=True, width="small"),
+            "% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
         }
     )
 
 with right_col:
+    st.markdown("##### 📅 Work-Week Dynamic Gantt Chart")
     if not df_gantt.empty:
         fig = px.timeline(
             df_gantt, 
@@ -316,38 +288,34 @@ with right_col:
             x_end="FINISH", 
             y="UNIQUE_TASK", 
             color="STAGE",
-            color_discrete_map={
-                "Elapsed": "#cde0f5", 
-                "Future": "#e8f5e9",  
-            }
+            color_discrete_map={"Elapsed": "#cde0f5", "Future": "#e8f5e9"}
         )
         
-        fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.5)', marker_line_width=1, opacity=0.9)
+        fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.9)
         
+        # จัดเรียงลำดับแถวแกน Y ให้ตรงตามระเบียบโครงสร้างของตารางและซ่อนป้ายชื่อซ้ำซ้อน
         ordered_tasks = df["UNIQUE_TASK"].tolist()
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
-        # 💡 Setup reactive weekend removal configs for the axis display
+        # ปรับค่ากริดและจัดแต่งแกน X ให้อยู่ด้านบนขนานเสมอกับ Header ฝั่งซ้ายพอดี
         xaxes_config = dict(
-            side="top", 
-            title=None,
-            tickformat="%d %b\n%a", 
-            showgrid=True, gridcolor='rgba(200, 200, 200, 0.3)',
+            side="top", title=None, tickformat="%d %b\n%a", 
+            showgrid=True, gridcolor='rgba(220, 220, 220, 0.5)',
             dtick="86400000",
             range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
-        
-        # If work week is chosen, strip Saturdays and Sundays from the chart completely
         if day_mode == "5-Day (Work Week)":
-            xaxes_config["rangebreaks"] = [dict(bounds=["sat", "mon"])]
+            xaxes_config["rangebreaks"] = [dict(bounds=["sat", "mon"])] # ตัดสัดส่วนวันเสาร์-อาทิตย์ออกจากระนาบแกนกราฟอย่างสมบูรณ์
             
         fig.update_xaxes(**xaxes_config)
         
-        fig.add_vline(x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="dash", line_color="#5D3FD3", annotation_text="CUT-OFF", annotation_position="top left", annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=2, bordercolor="white"))
-        fig.add_vline(x=target_date.strftime("%Y-%m-%d 23:59:59"), line_width=2, line_dash="solid", line_color="#E3242B", annotation_text="TARGET", annotation_position="top right", annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white"))
+        # เส้นกำกับเกณฑ์วัดความคืบหน้า (Cut-Off และ Target)
+        fig.add_vline(x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), line_width=1.5, line_dash="dash", line_color="#5D3FD3", annotation_text="CUT-OFF", annotation_position="top left", annotation=dict(font_size=9, font_color="white", bgcolor="#5D3FD3", borderpad=2))
+        fig.add_vline(x=target_date.strftime("%Y-%m-%d 23:59:59"), line_width=1.5, line_dash="solid", line_color="#E3242B", annotation_text="TARGET", annotation_position="top right", annotation=dict(font_size=9, font_color="white", bgcolor="#E3242B", borderpad=2))
         
+        # 💡 ปรับแต่ง Margin Top ให้มีสัดส่วนสมดุลพอดีกับระยะความสูงของหัวข้อ Spreadsheet
         fig.update_layout(
-            margin=dict(l=0, r=0, t=HEADER_HEIGHT, b=0),
+            margin=dict(l=0, r=5, t=HEADER_HEIGHT - 3.0, b=FOOTER_HEIGHT),
             height=EXACT_HEIGHT,
             showlegend=False,
             plot_bgcolor="white"
@@ -355,4 +323,4 @@ with right_col:
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     else:
-        st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>No timeline metrics matching criteria.</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: gray; line-height: {EXACT_HEIGHT}px; border: 1px dashed #ccc; border-radius: 6px;'>No timeline metrics matching criteria.</div>", unsafe_allow_html=True)
