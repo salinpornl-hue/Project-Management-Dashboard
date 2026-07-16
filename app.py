@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time # 👈 เพิ่ม time เข้ามาแล้ว
 
 # ==========================================
 # 1. Page Configuration
@@ -70,7 +70,6 @@ with t_col1:
 with t_col2:
     cut_off_date = st.date_input("✂️ CUT-OFF DATE", value=TODAY_DATE)
 with t_col3:
-    # คำนวณหา Target ชั่วคราวจากงานทั้งหมด (ถ้ามี)
     temp_target = TODAY_DATE + timedelta(days=30)
     if issues_only:
         dates = [parse_dates_from_body(t.get('body', ''), t.get('created_at'))[1] for t in issues_only]
@@ -87,7 +86,7 @@ with t_col5:
 st.markdown("---")
 
 # ==========================================
-# 6. Data Processing (คำนวณและสร้าง UNIQUE_TASK)
+# 6. Data Processing
 # ==========================================
 df_data = []
 gantt_data = []
@@ -119,7 +118,6 @@ if issues_only:
         else:
             status = "ON TRACK"
 
-        # 💡 สร้าง UNIQUE_TASK เพื่อป้องกัน Plotly ยุบรวมแถวที่มีชื่อซ้ำกัน
         unique_name = f"{task['number']} - {task['title']}"
 
         # --- ชุดข้อมูลสำหรับตาราง (Table Data) ---
@@ -139,22 +137,25 @@ if issues_only:
             "_raw_body": body 
         })
         
-        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data - การหั่น 2 สี) ---
-        if end_date <= cut_off_date:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Elapsed", "_raw_start": start_date})
-        elif start_date > cut_off_date:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
+        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data - เติมเวลาแก้ปัญหากราฟแหว่ง) ---
+        gantt_start = datetime.combine(start_date, time(0, 0, 0))
+        gantt_finish = datetime.combine(end_date, time(23, 59, 59))
+        gantt_cutoff = datetime.combine(cut_off_date, time(23, 59, 59))
+        
+        if gantt_finish <= gantt_cutoff:
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_finish, "STAGE": "Elapsed", "_raw_start": start_date})
+        elif gantt_start > gantt_cutoff:
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
         else:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": start_date, "FINISH": cut_off_date, "STAGE": "Elapsed", "_raw_start": start_date})
-            next_day = cut_off_date + timedelta(days=1)
-            if next_day <= end_date:
-                gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": next_day, "FINISH": end_date, "STAGE": "Future", "_raw_start": start_date})
+            # คาบเกี่ยว: หั่นชนกันที่เวลา 23:59:59 พอดี
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_cutoff, "STAGE": "Elapsed", "_raw_start": start_date})
+            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_cutoff, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
 
-    # สรุป Dataframe และเรียงลำดับ
+    # สรุป Dataframe
     df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True)
     df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True)
     
-    # ใช้งาน Filter
+    # Filter
     if search_query:
         df = df[df["TASK NAME"].str.contains(search_query, case=False)]
         df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
@@ -164,13 +165,12 @@ if issues_only:
         df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
-# 7. UI: Zoom Controls (Time-Axis Scaling)
+# 7. UI: Zoom Controls
 # ==========================================
 if not df.empty:
     st.markdown("##### 🔎 จัดการมุมมองเวลา (Zoom / Time Scaling)")
     z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
     
-    # ค่าเริ่มต้นสำหรับ Zoom: เอาวันที่เริ่มก่อนสุด และจบหลังสุดมาแสดง
     default_view_start = df["START"].min() - timedelta(days=2)
     default_view_end = df["FINISH"].max() + timedelta(days=2)
     
@@ -183,7 +183,6 @@ if not df.empty:
 # 8. Render Split-View UI
 # ==========================================
 if not df.empty:
-    # ตัดคอลัมน์ที่ใช้ประมวลผลออก ก่อนแสดงในตาราง
     df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"])
 
     ROW_HEIGHT = 35
@@ -192,7 +191,6 @@ if not df.empty:
     left_col, right_col = st.columns([0.45, 0.55])
     
     with left_col:
-        # [ฝั่งซ้าย] Data Editor (ตารางข้อมูล)
         edited_df = st.data_editor(
             df_display,
             key="task_editor",
@@ -214,12 +212,11 @@ if not df.empty:
         )
 
     with right_col:
-        # [ฝั่งขวา] Plotly Gantt Chart
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
             x_end="FINISH", 
-            y="UNIQUE_TASK", # 💡 ใช้ UNIQUE_TASK เป็นแกน Y เพื่อไม่ให้รวมแถวซ้ำ
+            y="UNIQUE_TASK", 
             color="STAGE",
             color_discrete_map={
                 "Elapsed": "#cde0f5", 
@@ -229,11 +226,9 @@ if not df.empty:
         
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.5)', marker_line_width=1, opacity=0.9)
         
-        # 💡 บังคับให้เรียงแถวตามตารางเป๊ะๆ (จากบนลงล่าง)
         ordered_tasks = df["UNIQUE_TASK"].tolist()[::-1]
         fig.update_yaxes(categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
-        # 💡 ใส่ระบบ Zoom (จำกัดช่วงเวลาแสดงผลตาม view_start, view_end)
         fig.update_xaxes(
             side="top", 
             title=None,
@@ -245,7 +240,7 @@ if not df.empty:
         
         # เส้น CUT-OFF 
         fig.add_vline(
-            x=cut_off_date.strftime("%Y-%m-%d"), 
+            x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), # 👈 เพิ่มเวลาให้ชนรอยต่อ
             line_width=2, 
             line_dash="dash", 
             line_color="#5D3FD3", 
@@ -256,7 +251,7 @@ if not df.empty:
 
         # เส้น TARGET 
         fig.add_vline(
-            x=target_date.strftime("%Y-%m-%d"), 
+            x=target_date.strftime("%Y-%m-%d 23:59:59"), 
             line_width=2, 
             line_dash="solid", 
             line_color="#E3242B", 
@@ -265,7 +260,6 @@ if not df.empty:
             annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white")
         )
         
-        # 💡 ปรับ Margin บน (t=42) เพื่อชดเชยความสูงให้เท่ากับหัวตาราง Data Editor พอดี
         fig.update_layout(
             margin=dict(l=0, r=0, t=42, b=0),
             height=DYNAMIC_HEIGHT,
