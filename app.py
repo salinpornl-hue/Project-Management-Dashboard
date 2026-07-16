@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import re
-from datetime import datetime, timedelta, time # 👈 เพิ่ม time เข้ามาแล้ว
+from datetime import datetime, timedelta, time
 
 # ==========================================
 # 1. Page Configuration
@@ -118,13 +118,17 @@ if issues_only:
         else:
             status = "ON TRACK"
 
+        # 💡 ดึงชื่อผู้รับผิดชอบจาก GitHub
+        assignees = task.get("assignees", [])
+        assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else "Unassigned"
+
         unique_name = f"{task['number']} - {task['title']}"
 
         # --- ชุดข้อมูลสำหรับตาราง (Table Data) ---
         df_data.append({
             "ID": task['number'],
             "UNIQUE_TASK": unique_name,
-            "WBS": str(i+1),
+            "ASSIGNEE": assignee_names, # 👈 แทนที่ WBS
             "TASK NAME": task['title'],
             "START": start_date,
             "FINISH": end_date,
@@ -137,7 +141,7 @@ if issues_only:
             "_raw_body": body 
         })
         
-        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data - เติมเวลาแก้ปัญหากราฟแหว่ง) ---
+        # --- ชุดข้อมูลสำหรับกราฟ (Gantt Data) ---
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
         gantt_cutoff = datetime.combine(cut_off_date, time(23, 59, 59))
@@ -147,15 +151,12 @@ if issues_only:
         elif gantt_start > gantt_cutoff:
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
         else:
-            # คาบเกี่ยว: หั่นชนกันที่เวลา 23:59:59 พอดี
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_cutoff, "STAGE": "Elapsed", "_raw_start": start_date})
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_cutoff, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
 
-    # สรุป Dataframe
     df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True)
     df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True)
     
-    # Filter
     if search_query:
         df = df[df["TASK NAME"].str.contains(search_query, case=False)]
         df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
@@ -183,10 +184,14 @@ if not df.empty:
 # 8. Render Split-View UI
 # ==========================================
 if not df.empty:
+    st.info("💡 **คำแนะนำ:** กรุณาหลีกเลี่ยงการกด Sort (เรียงลำดับ) ที่หัวตารางฝั่งซ้าย เนื่องจากจะทำให้กราฟฝั่งขวาแสดงแถวไม่ตรงกับตาราง")
+    
     df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"])
 
-    ROW_HEIGHT = 35
-    DYNAMIC_HEIGHT = max(300, (len(df) * ROW_HEIGHT) + 42)
+    # 💡 ใช้วิธีคำนวณความสูงให้ "เป๊ะ" ทุกพิกเซล เพื่อลบช่องว่าง (ไม่ใช้ max 300 แล้ว)
+    ROW_HEIGHT = 35.5 # ความสูง 1 แถวของ st.data_editor
+    HEADER_HEIGHT = 43 # ความสูงของหัวตาราง
+    EXACT_HEIGHT = int((len(df) * ROW_HEIGHT) + HEADER_HEIGHT)
 
     left_col, right_col = st.columns([0.45, 0.55])
     
@@ -196,10 +201,10 @@ if not df.empty:
             key="task_editor",
             hide_index=True,
             use_container_width=True,
-            height=DYNAMIC_HEIGHT,
+            height=EXACT_HEIGHT, # บังคับความสูงตาราง
             column_config={
                 "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "WBS": st.column_config.TextColumn("WBS", disabled=True, width="small"),
+                "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=True, width="small"), # 👈 เพิ่มคอลัมน์ผู้รับผิดชอบ
                 "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"),
                 "START": st.column_config.DateColumn("START", format="DD MMM YYYY"),
                 "FINISH": st.column_config.DateColumn("FINISH", format="DD MMM YYYY"),
@@ -226,8 +231,9 @@ if not df.empty:
         
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.5)', marker_line_width=1, opacity=0.9)
         
-        ordered_tasks = df["UNIQUE_TASK"].tolist()[::-1]
-        fig.update_yaxes(categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
+        # 💡 บังคับให้แกน Y เรียงตาม DataFrame หลักเสมอ (ป้องกันการแรนดอม)
+        ordered_tasks = df["UNIQUE_TASK"].tolist()
+        fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
         fig.update_xaxes(
             side="top", 
@@ -238,9 +244,8 @@ if not df.empty:
             range=[view_start.strftime("%Y-%m-%d"), view_end.strftime("%Y-%m-%d")]
         )
         
-        # เส้น CUT-OFF 
         fig.add_vline(
-            x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), # 👈 เพิ่มเวลาให้ชนรอยต่อ
+            x=cut_off_date.strftime("%Y-%m-%d 23:59:59"), 
             line_width=2, 
             line_dash="dash", 
             line_color="#5D3FD3", 
@@ -249,7 +254,6 @@ if not df.empty:
             annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=2, bordercolor="white")
         )
 
-        # เส้น TARGET 
         fig.add_vline(
             x=target_date.strftime("%Y-%m-%d 23:59:59"), 
             line_width=2, 
@@ -260,9 +264,10 @@ if not df.empty:
             annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=2, bordercolor="white")
         )
         
+        # 💡 บังคับความสูงและ Margin กราฟให้พอดีกับตารางฝั่งซ้ายแบบเป๊ะๆ
         fig.update_layout(
-            margin=dict(l=0, r=0, t=42, b=0),
-            height=DYNAMIC_HEIGHT,
+            margin=dict(l=0, r=0, t=HEADER_HEIGHT, b=0),
+            height=EXACT_HEIGHT,
             showlegend=False,
             plot_bgcolor="white"
         )
