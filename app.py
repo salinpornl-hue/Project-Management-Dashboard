@@ -202,7 +202,7 @@ if not df.empty:
                 
                 # --- เพิ่มเส้น CUT-OFF (เส้นประ) ---
                 fig.add_vline(
-                    x=TODAY_DATE, 
+                    x=TODAY_DATE.strftime("%Y-%m-%d"), # 👈 แปลงเป็น String ตรงนี้
                     line_width=2, 
                     line_dash="dash", 
                     line_color="#5D3FD3", 
@@ -213,7 +213,7 @@ if not df.empty:
 
                 # --- เพิ่มเส้น TARGET (เส้นทึบ) ---
                 fig.add_vline(
-                    x=target_date, 
+                    x=target_date.strftime("%Y-%m-%d"), # 👈 แปลงเป็น String ตรงนี้
                     line_width=2, 
                     line_dash="solid", 
                     line_color="#E3242B", 
@@ -221,6 +221,7 @@ if not df.empty:
                     annotation_position="top right",
                     annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=3, bordercolor="white", borderwidth=1)
                 )
+
                 
                 # จัด Layout
                 fig.update_layout(
