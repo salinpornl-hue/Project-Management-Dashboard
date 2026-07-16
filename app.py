@@ -54,7 +54,6 @@ def calc_progress_from_checklist(body, status):
         return (checked / total) * 100
     return 100.0 if status == "COMPLETED" else 0.0
 
-# ดึงวันที่ปัจจุบันแบบตัดเวลาทิ้ง (ป้องกันบั๊ก Delay)
 TODAY_DATE = datetime.now().date()
 
 # --- UI: Top Toolbar ---
@@ -64,7 +63,7 @@ t_col1, t_col2, t_col3, t_col4 = st.columns([2.5, 1.5, 1.5, 1])
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...", placeholder="พิมพ์ชื่อ Task...")
 with t_col2:
-    display_view = st.selectbox("☷ DISPLAY VIEW", ["Gantt & Table", "Kanban Board", "Dashboard Metrics"])
+    display_view = st.selectbox("☷ DISPLAY VIEW", ["Table & Gantt (PM Style)", "Kanban Board", "Dashboard Metrics"])
 with t_col3:
     task_filter = st.selectbox("▽ FILTER STATUS", ["All Tasks", "IN PROGRESS", "DELAY", "COMPLETED"])
 with t_col4:
@@ -85,14 +84,11 @@ if issues_only:
         body = task.get('body', '')
         start_str, end_str = parse_dates_from_body(body, task.get('created_at'))
         
-        # แปลงเป็น Date Object
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
-        
         days = (end_date - start_date).days + 1
         
         state = task.get('state')
-        # [แก้ไข] เปรียบเทียบวันที่อย่างแม่นยำด้วย .date() เท่านั้น
         if state == 'closed':
             status = "COMPLETED"
         elif TODAY_DATE > end_date:
@@ -101,19 +97,8 @@ if issues_only:
             status = "IN PROGRESS"
             
         assignees = ", ".join([a['login'] for a in task.get('assignees', [])]) if task.get('assignees') else "Unassigned"
-            
         plan_pct = min(100.0, max(0.0, ((TODAY_DATE - start_date).days / days) * 100)) if days > 0 else 0
         act_pct = calc_progress_from_checklist(body, status)
-
-        variance = act_pct - plan_pct
-        if status == "COMPLETED":
-            health = "🟢 Done"
-        elif variance >= 0:
-            health = "🟢 On Track"
-        elif variance > -20:
-            health = "🟡 At Risk"
-        else:
-            health = "🔴 Behind"
 
         df_data.append({
             "ID": task['number'],
@@ -124,7 +109,6 @@ if issues_only:
             "DAYS": days,
             "% PLAN": plan_pct,
             "% ACT.": act_pct, 
-            "HEALTH": health,
             "STATUS": status,
             "_raw_start": start_date,
             "_raw_body": body 
@@ -142,64 +126,80 @@ if issues_only:
 
     if not df.empty:
         # ==========================================
-        # 1. VIEW: GANTT & TABLE (มุมมอง PM มืออาชีพ)
+        # 1. VIEW: TABLE & GANTT (PM STYLE)
         # ==========================================
-        if display_view == "Gantt & Table":
+        if display_view == "Table & Gantt (PM Style)":
             
-            # --- 1.1 PROFESSIONAL GANTT CHART ---
-            st.markdown("##### 📅 Project Timeline")
+            # --- สร้างแกนเวลา (Time-scaled Columns) แบบฝังในตาราง ---
+            min_date = df_display["START"].min()
+            max_date = df_display["FINISH"].max()
+            total_days = (max_date - min_date).days
             
-            # ปรับแต่งให้ Gantt Chart มีปฏิทินแสดงวันที่อยู่ด้านบนสุด เหมือน MS Project
-            fig = px.timeline(
-                df, 
-                x_start="START", 
-                x_end="FINISH", 
-                y="TASK NAME", 
-                color="STATUS",
-                text="% ACT.", # แสดงตัวเลข Progress บนแท่ง
-                color_discrete_map={
-                    "COMPLETED": "#00C853", 
-                    "IN PROGRESS": "#29B6F6", 
-                    "DELAY": "#FF5252"
-                }
-            )
-            fig.update_yaxes(autorange="reversed", title=None)
-            fig.update_traces(textposition='inside', textfont_color='white', texttemplate='%{text:.0f}%')
-            # ตั้งค่าแกน X ให้อยู่ด้านบน และแสดงปฏิทินรายวัน/เดือน
-            fig.update_xaxes(
-                side="top", 
-                title=None,
-                tickformat="%d %b %Y", # ตัวอย่าง: 16 Jul 2026
-                showgrid=True, gridcolor='LightGray'
-            )
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=40, b=0),
-                height=max(250, len(df) * 40 + 50),
-                showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            # คำนวณช่วงห่างของคอลัมน์อัตโนมัติ (วัน / สัปดาห์ / เดือน)
+            if total_days <= 30:
+                interval = 1  # รายวัน
+            elif total_days <= 180:
+                interval = 7  # รายสัปดาห์
+            else:
+                interval = 30 # รายเดือน (โดยประมาณ)
+
+            current = min_date
+            gantt_columns = {} # เก็บ config สำหรับคอลัมน์ที่สร้างขึ้นใหม่
             
-            st.markdown("---")
+            # วนลูปสร้างคอลัมน์วันที่
+            while current <= max_date:
+                if interval == 1:
+                    col_name = current.strftime("%d %b")
+                    next_date = current + timedelta(days=1)
+                elif interval == 7:
+                    col_name = f"W:{current.strftime('%d %b')}"
+                    next_date = current + timedelta(days=7)
+                else:
+                    col_name = current.strftime("%b %Y")
+                    # ขยับไปเดือนถัดไป
+                    next_date = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+                
+                # เช็คว่างานนี้อยู่ในช่วงเวลาของคอลัมน์นี้หรือไม่
+                def get_gantt_block(row, start_period=current, end_period=next_date-timedelta(days=1)):
+                    # ถ้าช่วงเวลาทำงาน ทับซ้อน กับช่วงเวลาของคอลัมน์
+                    if row['START'] <= end_period and row['FINISH'] >= start_period:
+                        if row['STATUS'] == "COMPLETED": return "🟩"
+                        elif row['STATUS'] == "DELAY": return "🟥"
+                        return "🟦"
+                    return ""
+                
+                # เพิ่มคอลัมน์ลงใน DataFrame ที่จะแสดงผล
+                df_display[col_name] = df_display.apply(get_gantt_block, axis=1)
+                
+                # ตั้งค่าให้คอลัมน์วันที่เหล่านี้แก้ไขไม่ได้ (ให้แก้เฉพาะ START/FINISH)
+                gantt_columns[col_name] = st.column_config.TextColumn(col_name, disabled=True, width="small")
+                
+                current = next_date
+
+            st.markdown("##### 📋 Master Schedule & Gantt *(แก้ไขวันที่/สถานะทางซ้าย เพื่อให้แถบสีทางขวาอัปเดต)*")
             
-            # --- 1.2 DATA EDITOR TABLE ---
-            st.markdown("##### 📋 Master Schedule *(2-Way Sync with GitHub)*")
+            # ตั้งค่าคอลัมน์พื้นฐาน
+            base_columns = {
+                "STATUS": st.column_config.SelectboxColumn("STATUS", options=["IN PROGRESS", "DELAY", "COMPLETED"]),
+                "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
+                "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD"),
+                "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100),
+                "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100)
+            }
+            # รวมการตั้งค่าคอลัมน์ทั้งหมดเข้าด้วยกัน
+            final_columns_config = {**base_columns, **gantt_columns}
+
+            # แสดงตารางพร้อมแถบ Gantt ในตัว
             edited_df = st.data_editor(
                 df_display,
                 key="task_editor",
                 hide_index=True,
-                use_container_width=True,
+                use_container_width=False, # ยอมให้ Scroll แนวนอนได้
                 height=max(400, len(df) * 38 + 50),
-                column_config={
-                    "STATUS": st.column_config.SelectboxColumn("STATUS", options=["IN PROGRESS", "DELAY", "COMPLETED"]),
-                    "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
-                    "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD"),
-                    "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100),
-                    "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100)
-                }
+                column_config=final_columns_config
             )
 
-            # 2-Way Sync Logic
+            # --- 2-Way Sync Logic ---
             if st.session_state.task_editor["edited_rows"]:
                 st.toast('กำลังอัปเดต GitHub...', icon='🔄')
                 edits = st.session_state.task_editor["edited_rows"]
@@ -212,8 +212,8 @@ if issues_only:
                         payload["state"] = "closed" if changes["STATUS"] == "COMPLETED" else "open"
                         
                     if "START" in changes or "FINISH" in changes:
-                        new_start = str(changes.get("START", df_display["START"].iloc[row_idx]))
-                        new_finish = str(changes.get("FINISH", df_display["FINISH"].iloc[row_idx]))
+                        new_start = str(changes.get("START", df["START"].iloc[row_idx]))
+                        new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
                         if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
                             payload["body"] = re.sub(
                                 r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
@@ -234,7 +234,7 @@ if issues_only:
             col_todo, col_delay, col_done = st.columns(3)
             
             with col_todo:
-                st.success("🟦 **IN PROGRESS (กำลังดำเนินการ)**")
+                st.success("🟦 **IN PROGRESS**")
                 for _, row in df[df["STATUS"] == "IN PROGRESS"].iterrows():
                     with st.container(border=True):
                         st.markdown(f"**#{row['ID']} {row['TASK NAME']}**")
@@ -244,7 +244,7 @@ if issues_only:
                             update_task_state(row['ID'], "closed")
                             
             with col_delay:
-                st.error("🟥 **DELAYED (ล่าช้ากว่ากำหนด)**")
+                st.error("🟥 **DELAYED**")
                 for _, row in df[df["STATUS"] == "DELAY"].iterrows():
                     with st.container(border=True):
                         st.markdown(f"**#{row['ID']} {row['TASK NAME']}**")
@@ -254,7 +254,7 @@ if issues_only:
                             update_task_state(row['ID'], "closed")
 
             with col_done:
-                st.info("🟩 **COMPLETED (เสร็จสมบูรณ์)**")
+                st.info("🟩 **COMPLETED**")
                 for _, row in df[df["STATUS"] == "COMPLETED"].iterrows():
                     with st.container(border=True):
                         st.markdown(f"~~**#{row['ID']} {row['TASK NAME']}**~~")
@@ -270,7 +270,6 @@ if issues_only:
             kpi1.metric("Total Tasks", len(df))
             kpi2.metric("Completed", len(df[df["STATUS"] == "COMPLETED"]))
             kpi3.metric("Delayed", len(df[df["STATUS"] == "DELAY"]), delta_color="inverse")
-            
             avg_act = df["% ACT."].mean()
             kpi4.metric("Overall Project Progress", f"{avg_act:.1f}%")
 
