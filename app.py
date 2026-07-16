@@ -53,6 +53,12 @@ def parse_dates_from_body(body, created_at):
     return start, end
 
 def calc_progress_from_checklist(body, state):
+    # 💡 ใหม่: ตรวจสอบก่อนว่ามีแท็กความคืบหน้าที่ถูกพิมพ์ตรงจากตารางเซฟไว้หรือไม่
+    match = re.search(r"📊 \*\*Actual Progress:\*\* (\d+(?:\.\d+)?)%", str(body))
+    if match:
+        return min(100.0, max(0.0, float(match.group(1))))
+        
+    # หากไม่มีแท็กพิมพ์ตรง ให้ถอยกลับไปคำนวณจากระบบ Checklist บน GitHub ตามเดิม
     if not body:
         return 100.0 if state == "closed" else 0.0
     checked = body.lower().count("[x]")
@@ -215,26 +221,42 @@ if total_changes > 0:
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
                     finish = str(new_row.get("FINISH", TODAY_DATE.strftime("%Y-%m-%d")))
                     assignee_str = str(new_row.get("ASSIGNEE", ""))
-                    body = f"📅 **Timeline:** {start} to {finish}\n\n- [ ] Checklist 1"
+                    # เมื่อสร้างแถวใหม่ ให้ฝังแท็กตั้งต้นไว้ที่ 0%
+                    body = f"📅 **Timeline:** {start} to {finish}\n\n📊 **Actual Progress:** 0%\n\n- [ ] Checklist 1"
                     payload = {"title": title, "body": body}
                     if assignee_str.strip():
                         payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
+                
                 for row_idx, changes in edited_rows.items():
                     if row_idx in deleted_rows: continue
                     issue_id = df["ID"].iloc[row_idx]
-                    current_body = df["_raw_body"].iloc[row_idx]
+                    current_body = str(df["_raw_body"].iloc[row_idx])
                     payload = {}
                     if "TASK NAME" in changes: payload["title"] = changes["TASK NAME"]
                     if "ASSIGNEE" in changes:
                         payload["assignees"] = [a.strip() for a in changes["ASSIGNEE"].split(",") if a.strip()]
+                    
+                    # บันทึกกรณีแก้ START / FINISH
                     if "START" in changes or "FINISH" in changes:
                         new_start = str(changes.get("START", df["START"].iloc[row_idx]))
                         new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
                         if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
-                            payload["body"] = re.sub(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", f"📅 **Timeline:** {new_start} to {new_finish}", current_body)
+                            current_body = re.sub(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", f"📅 **Timeline:** {new_start} to {new_finish}", current_body)
                         else:
-                            payload["body"] = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
+                            current_body = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
+                    
+                    # 💡 ใหม่: ตรวจจับกรณีผู้ใช้กรอกตัวเลข % ACT. จากตาราง แล้วเขียนบันทึกฝังลงไปในเนื้อหา GitHub
+                    if "% ACT." in changes:
+                        new_act = changes["% ACT."]
+                        if re.search(r"📊 \*\*Actual Progress:\*\* \d+(?:\.\d+)?%", current_body):
+                            current_body = re.sub(r"📊 \*\*Actual Progress:\*\* \d+(?:\.\d+)?%", f"📊 **Actual Progress:** {new_act}%", current_body)
+                        else:
+                            current_body = f"{current_body}\n\n📊 **Actual Progress:** {new_act}%"
+                    
+                    if "START" in changes or "FINISH" in changes or "% ACT." in changes or "TASK NAME" in changes or "ASSIGNEE" in changes:
+                        payload["body"] = current_body
+
                     if payload:
                         requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
             if not has_error:
@@ -263,8 +285,8 @@ with left_col:
         use_container_width=True,
         num_rows="dynamic",
         height=EXACT_HEIGHT,
-        # 💡 แก้ไขจุดนี้: ย้ายการสั่งล็อกคอลัมน์ที่ไม่ต้องการให้แก้ไขมาไว้ตรงนี้แทน
-        disabled=["ID", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"],
+        # 💡 เอา "% ACT." ออกจากลิสต์ disabled เพื่อเปิดสิทธิ์ให้แก้ไขจากหน้าตารางได้แล้ว!
+        disabled=["ID", "DAYS", "% PLAN", "STATUS", "% FUT"],
         column_config={
             "ID": st.column_config.NumberColumn("ID", width="small"),
             "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", width="small"),
