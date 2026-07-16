@@ -53,7 +53,7 @@ def parse_dates_from_body(body, created_at):
     return start, end
 
 def calc_progress_from_checklist(body, state):
-    # 💡 ใหม่: ตรวจสอบก่อนว่ามีแท็กความคืบหน้าที่ถูกพิมพ์ตรงจากตารางเซฟไว้หรือไม่
+    # ตรวจสอบก่อนว่ามีแท็กความคืบหน้าที่ถูกพิมพ์ตรงจากตารางเซฟไว้หรือไม่
     match = re.search(r"📊 \*\*Actual Progress:\*\* (\d+(?:\.\d+)?)%", str(body))
     if match:
         return min(100.0, max(0.0, float(match.group(1))))
@@ -221,7 +221,6 @@ if total_changes > 0:
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
                     finish = str(new_row.get("FINISH", TODAY_DATE.strftime("%Y-%m-%d")))
                     assignee_str = str(new_row.get("ASSIGNEE", ""))
-                    # เมื่อสร้างแถวใหม่ ให้ฝังแท็กตั้งต้นไว้ที่ 0%
                     body = f"📅 **Timeline:** {start} to {finish}\n\n📊 **Actual Progress:** 0%\n\n- [ ] Checklist 1"
                     payload = {"title": title, "body": body}
                     if assignee_str.strip():
@@ -237,7 +236,6 @@ if total_changes > 0:
                     if "ASSIGNEE" in changes:
                         payload["assignees"] = [a.strip() for a in changes["ASSIGNEE"].split(",") if a.strip()]
                     
-                    # บันทึกกรณีแก้ START / FINISH
                     if "START" in changes or "FINISH" in changes:
                         new_start = str(changes.get("START", df["START"].iloc[row_idx]))
                         new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
@@ -246,7 +244,7 @@ if total_changes > 0:
                         else:
                             current_body = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
                     
-                    # 💡 ใหม่: ตรวจจับกรณีผู้ใช้กรอกตัวเลข % ACT. จากตาราง แล้วเขียนบันทึกฝังลงไปในเนื้อหา GitHub
+                    # ตรวจจับกรณีผู้ใช้แก้ไขตัวเลขจากตาราง แล้วเขียนบันทึกฝังลงไปในเนื้อหา GitHub
                     if "% ACT." in changes:
                         new_act = changes["% ACT."]
                         if re.search(r"📊 \*\*Actual Progress:\*\* \d+(?:\.\d+)?%", current_body):
@@ -285,7 +283,6 @@ with left_col:
         use_container_width=True,
         num_rows="dynamic",
         height=EXACT_HEIGHT,
-        # 💡 เอา "% ACT." ออกจากลิสต์ disabled เพื่อเปิดสิทธิ์ให้แก้ไขจากหน้าตารางได้แล้ว!
         disabled=["ID", "DAYS", "% PLAN", "STATUS", "% FUT"],
         column_config={
             "ID": st.column_config.NumberColumn("ID", width="small"),
@@ -295,7 +292,8 @@ with left_col:
             "FINISH": st.column_config.DateColumn("FINISH", format="DD/MM/YYYY", width="small"), 
             "DAYS": st.column_config.NumberColumn("DAYS", width="small"),
             "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
-            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            # 💡 แก้ไขจุดนี้: เปลี่ยนจาก ProgressColumn เป็น NumberColumn เพื่อเปิดให้คีย์ตัวเลขหรือกดเลื่อนเปอร์เซ็นต์ได้จริงแล้วครับ!
+            "% ACT.": st.column_config.NumberColumn("% ACT.", format="%d%%", min_value=0, max_value=100, width="small"),
             "STATUS": st.column_config.TextColumn("STATUS", width="small"),
             "% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
         }
