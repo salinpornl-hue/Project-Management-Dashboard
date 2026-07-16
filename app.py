@@ -147,13 +147,12 @@ if issues_only:
             "_state": state
         })
 
-# สร้าง Master Dataframe และล็อก Index เรียงตามวันที่เริ่มต้น
 if df_data:
     df = pd.DataFrame(df_data).sort_values("START").reset_index(drop=True)
 else:
     df = pd.DataFrame(columns=["ID", "TASK NAME", "ASSIGNEE", "START", "FINISH", "% ACT.", "_raw_body", "_state"])
 
-# 💡 ไฮไลต์เด็ด: ดักจับและฝังค่า LIVE EDITS ที่ผู้ใช้พิมพ์สดบนตารางลงในแบบจำลองข้อมูลทันทีก่อนการประมวลผล
+# ดักจับ Live Edits ที่พึ่งพิมพ์สดจากตารางตารางข้อมูล
 pending_changes = st.session_state.get("task_editor", {})
 edited_rows = pending_changes.get("edited_rows", {})
 
@@ -168,7 +167,7 @@ for row_str, changes in edited_rows.items():
             else:
                 df.at[row_idx, col_name] = new_val
 
-# 🔄 ประมวลผลคำนวณ STATUS และวาด Gantt Chart แบบ Reactive ทันทีหลังได้รับ Live Edits
+# ประมวลผลสถานะและประกอบร่างโมเดลสำหรับส่งให้แท่งกราฟ
 gantt_data = []
 if not df.empty:
     for idx, row in df.iterrows():
@@ -183,7 +182,6 @@ if not df.empty:
         plan_pct = max(0.0, min(100.0, (elapsed_days / total_days) * 100)) if total_days > 0 else 0.0
         fut_pct = 100.0 - plan_pct
         
-        # 🔗 ผูกสูตรสถานะโครงการเข้ากับตัวเลข % ACT. ที่เปลี่ยนไปแบบสด ๆ
         if state == 'closed' or act_pct >= 100.0:
             status = "COMPLETED"
         elif act_pct < plan_pct:
@@ -201,17 +199,21 @@ if not df.empty:
         
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
+        
+        # 💡 ใหม่: สร้างข้อความรูปแบบขีดคั่นแบ่งส่วนความคืบหน้า (เช่น | 45%) ฝังเข้าตัวแปรตัวถัง
+        progress_marker = f"<b>| {int(act_pct)}%</b>"
+        
         gantt_data.append({
             "UNIQUE_TASK": unique_name,
             "TASK NAME": row['TASK NAME'],
             "START": gantt_start,
             "FINISH": gantt_finish,
-            "STATUS": status
+            "STATUS": status,
+            "PROGRESS_MARKER": progress_marker  # ส่งขีดมาร์กเกอร์เข้าไปใช้ในกราฟ
         })
         
 df_gantt = pd.DataFrame(gantt_data) if gantt_data else pd.DataFrame()
 
-# กรองผลลัพธ์การแสดงผล (โดยยังคงรักษา Index เดิมของแถวไว้เพื่อให้ตารางและโมเดลบันทึกคุยกันรู้เรื่อง)
 if search_query and not df.empty:
     df = df[df["TASK NAME"].str.contains(search_query, case=False)]
     if not df_gantt.empty:
@@ -223,7 +225,7 @@ if task_filter != "All" and not df.empty:
         df_gantt = df_gantt[df_gantt["STATUS"] == task_filter]
 
 # ==========================================
-# 7. UI: Bulk Edit Save System (ระบบเซฟอัจฉริยะอ้างอิงตามดัชนีจำลองต้นทาง)
+# 7. UI: Bulk Edit Save System
 # ==========================================
 added_rows = pending_changes.get("added_rows", [])
 deleted_rows = pending_changes.get("deleted_rows", [])
@@ -237,12 +239,10 @@ if total_changes > 0:
         if st.button("💾 Save Changes to GitHub", type="primary", use_container_width=True):
             has_error = False
             with st.spinner("Saving configurations..."):
-                # ลบชิ้นงาน (ปิดประเด็น)
                 for row_str in deleted_rows:
                     row_idx = int(row_str)
                     issue_id = df.loc[row_idx, "ID"]
                     requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json={"state": "closed"})
-                # สร้างชิ้นงานใหม่
                 for new_row in added_rows:
                     title = new_row.get("TASK NAME", "Untitled Task")
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
@@ -253,7 +253,6 @@ if total_changes > 0:
                     if assignee_str.strip():
                         payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
-                # บันทึกข้อมูลที่แก้ไขสดลงเซิร์ฟเวอร์
                 for row_str, changes in edited_rows.items():
                     row_idx = int(row_str)
                     if row_idx in deleted_rows: continue
@@ -331,12 +330,14 @@ with left_col:
 with right_col:
     st.markdown("##### 📅 Gantt Chart &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #81C784; padding-left:4px;'>COMPLETED</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #90CAF9; padding-left:4px;'>ON TRACK</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #EF9A9A; padding-left:4px;'>DELAY</span>", unsafe_allow_html=True)
     if not df_gantt.empty:
+        # 💡 ใหม่: เพิ่ม parameter `text="PROGRESS_MARKER"` เข้าไปในพารามิเตอร์เริ่มต้นของโครงสร้างรูปวาด
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
             x_end="FINISH", 
             y="UNIQUE_TASK", 
             color="STATUS",
+            text="PROGRESS_MARKER",
             color_discrete_map={
                 "COMPLETED": "#81C784",
                 "ON TRACK": "#90CAF9",
@@ -344,7 +345,15 @@ with right_col:
             }
         )
         
-        fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.95)
+        # 💡 ใหม่: ตั้งค่าตำแหน่งให้อักษรขีดแสดงกึ่งกลางแท่ง (inside) และปรับสีให้อ่านคมชัดขึ้น
+        fig.update_traces(
+            textposition="inside",
+            insidetextanchor="middle",
+            textfont=dict(color="#1A1A1A", size=11, family="Courier New, monospace"),
+            marker_line_color='rgba(100, 120, 150, 0.4)', 
+            marker_line_width=1, 
+            opacity=0.95
+        )
         
         ordered_tasks = df["UNIQUE_TASK"].tolist() if not df.empty else []
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
