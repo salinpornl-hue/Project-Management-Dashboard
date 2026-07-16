@@ -1,5 +1,9 @@
 import streamlit as st
 import requests
+import pandas as pd
+import plotly.express as px
+import re
+from datetime import datetime, timedelta
 
 # 1. Page Configuration
 st.set_page_config(page_title="BuildPM Task Tracker", layout="wide", page_icon="🏗️")
@@ -13,115 +17,150 @@ except Exception as e:
     st.error("Configuration Error: Missing credentials. Please configure GITHUB_TOKEN, REPO_OWNER, and REPO_NAME in Streamlit Secrets.")
     st.stop()
 
-# --- Functions สำหรับติดต่อ API ---
-
 def get_headers():
     return {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
 
-# ฟังก์ชันดึงข้อมูลงาน (GET)
+# --- Functions สำหรับติดต่อ API ---
+
 def get_tasks():
-    # ดึงเฉพาะ issue ที่ยังเปิดอยู่ (state=open)
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=open"
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=all" # ดึงมาทั้งงานที่เปิดและปิดแล้วเพื่อดูประวัติ
     response = requests.get(url, headers=get_headers())
-    
     if response.status_code == 200:
         return response.json()
-    elif response.status_code == 401:
-        st.error("Error 401 (Unauthorized): Invalid GitHub Token.")
-        return []
-    elif response.status_code == 404:
-        st.error("Error 404 (Not Found): Repository not found.")
-        return []
     else:
-        st.error(f"Failed to fetch data. API returned status code: {response.status_code}")
+        st.error(f"Failed to fetch data: {response.status_code}")
         return []
 
-# ฟังก์ชันสร้างงานใหม่ (POST)
-def create_task(title, body):
+def create_task(title, body, start_date, end_date):
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues"
-    payload = {"title": title, "body": body}
+    # ฝังวันที่ลงไปใน Description เพื่อเอามาใช้วาดกราฟ
+    formatted_body = f"📅 **Timeline:** {start_date} to {end_date}\n\n---\n\n{body}"
+    payload = {"title": title, "body": formatted_body}
     return requests.post(url, headers=get_headers(), json=payload)
 
-# ฟังก์ชันอัปเดตสถานะงาน (PATCH) เช่น ปิดงาน
 def update_task_state(issue_number, state="closed"):
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}"
     payload = {"state": state}
     return requests.patch(url, headers=get_headers(), json=payload)
 
+# --- ฟังก์ชันสกัดข้อมูลเพื่อทำ Gantt Chart ---
+def parse_dates_from_body(body, created_at):
+    # ค้นหารูปแบบ "YYYY-MM-DD to YYYY-MM-DD"
+    match = re.search(r"(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})", str(body))
+    if match:
+        return match.group(1), match.group(2)
+    else:
+        # ถ้าไม่มี ให้ใช้วันที่สร้างงานเป็นจุดเริ่มต้น และบวกไป 7 วันเป็นจุดสิ้นสุดจำลอง
+        start = created_at[:10]
+        end = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        return start, end
+
 # --- UI และการแสดงผล ---
 
 st.title("🏗️ BuildPM - Project Management System")
-st.write("Project tracking and task handover dashboard")
+st.write("Project tracking, timeline simulation, and task handover dashboard")
 st.markdown("---")
 
-# Fetch data
 tasks = get_tasks()
+issues_only = [t for t in tasks if 'pull_request' not in t]
 
-if not tasks:
-    st.info("🎉 No active tasks! Your team is all caught up, or the repository configuration is incorrect.")
-else:
-    # กรองเอาเฉพาะ Issue แท้ๆ (ไม่เอา Pull Request)
-    issues_only = [t for t in tasks if 'pull_request' not in t]
+# ==========================================
+# 📊 ส่วนที่ 1: ระบบแผนงาน (Gantt Chart)
+# ==========================================
+if issues_only:
+    st.subheader("📅 Project Timeline (Gantt Chart)")
     
-    # Task Rendering Layout (จัดเรียง 3 คอลัมน์)
-    cols = st.columns(3)
-    
-    for index, task in enumerate(issues_only):
-        title = task.get('title', 'Untitled Task')
-        body = task.get('body', 'No description provided.')
+    # เตรียมข้อมูลใส่ DataFrame ของ Pandas
+    df_data = []
+    for task in issues_only:
+        start_date, end_date = parse_dates_from_body(task.get('body'), task.get('created_at'))
         assignee = task.get('assignee', {}).get('login', 'Unassigned') if task.get('assignee') else 'Unassigned'
-        labels = [label['name'] for label in task.get('labels', [])]
+        status = "Completed" if task.get('state') == 'closed' else "In Progress"
+        
+        df_data.append({
+            "Task": f"#{task['number']} {task['title']}",
+            "Start": start_date,
+            "Finish": end_date,
+            "Assignee": assignee,
+            "Status": status
+        })
+    
+    if df_data:
+        df = pd.DataFrame(df_data)
+        # วาดกราฟแกนต์ด้วย Plotly
+        fig = px.timeline(
+            df, x_start="Start", x_end="Finish", y="Task", 
+            color="Status", # แบ่งสีตามสถานะงาน
+            color_discrete_map={"Completed": "#28a745", "In Progress": "#ffc107"},
+            hover_data=["Assignee"]
+        )
+        fig.update_yaxes(autorange="reversed") # ให้งานที่สร้างก่อนอยู่บนสุด
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("ยังไม่มีข้อมูลสำหรับสร้างตารางเวลา กรุณาสร้างงานใหม่")
+
+st.markdown("---")
+
+# ==========================================
+# 🗂️ ส่วนที่ 2: จัดการงาน (Task Cards)
+# ==========================================
+st.subheader("📋 Active Tasks")
+active_tasks = [t for t in issues_only if t['state'] == 'open']
+
+if not active_tasks:
+    st.success("ไม่มีงานที่ค้างอยู่ เยี่ยมมาก!")
+else:
+    cols = st.columns(3)
+    for index, task in enumerate(active_tasks):
+        title = task.get('title', 'Untitled Task')
+        body = task.get('body', '')
+        assignee = task.get('assignee', {}).get('login', 'Unassigned') if task.get('assignee') else 'Unassigned'
         issue_number = task.get('number')
         
-        # กระจายการ์ดงานลงคอลัมน์ (0, 1, 2 วนลูปไปเรื่อยๆ)
         col = cols[index % 3]
-        
         with col:
             with st.container(border=True):
                 st.markdown(f"#### 📌 {title}")
                 st.caption(f"👤 Assignee: **{assignee}**")
-                
-                # ถ้ามี Label ให้แสดงผลด้วยสีเทา
-                if labels:
-                    st.write(f"🏷️ `{', '.join(labels)}`")
                     
                 with st.expander("ดูรายละเอียดงาน"):
-                    st.write(body)
+                    st.markdown(body) # แสดงรายละเอียดรวมถึง Timeline ที่ฝังไว้
                 
-                # แบ่งปุ่มกดเป็น 2 ฝั่ง
-                btn_col1, btn_col2 = st.columns(2)
-                
-                with btn_col1:
-                    if st.button("ส่งต่องาน 🔄", key=f"handover_{issue_number}", use_container_width=True):
-                        st.toast(f"จำลองการส่งต่องาน: {title}")
-                
-                with btn_col2:
-                    if st.button("ปิดงาน ✅", key=f"close_{issue_number}", type="primary", use_container_width=True):
-                        res = update_task_state(issue_number, "closed")
-                        if res.status_code == 200:
-                            st.success("ปิดงานเรียบร้อย!")
-                            st.rerun() # รีเฟรชหน้าจออัตโนมัติ
-                        else:
-                            st.error(f"เกิดข้อผิดพลาด: {res.status_code}")
+                # ปุ่มปิดงาน
+                if st.button("ปิดงาน ✅", key=f"close_{issue_number}", type="primary", use_container_width=True):
+                    res = update_task_state(issue_number, "closed")
+                    if res.status_code == 200:
+                        st.rerun()
 
-# --- Sidebar สำหรับสร้างงานใหม่ ---
+# ==========================================
+# ➕ ส่วนที่ 3: Sidebar สำหรับสร้างงานใหม่
+# ==========================================
 with st.sidebar:
     st.header("➕ Create New Task")
-    new_task_title = st.text_input("Task Title")
-    new_task_desc = st.text_area("Task Description")
+    new_task_title = st.text_input("Task Title (ชื่องาน)")
+    
+    # เพิ่ม Date Picker 
+    col1, col2 = st.columns(2)
+    with col1:
+        start_d = st.date_input("Start Date")
+    with col2:
+        end_d = st.date_input("End Date")
+        
+    new_task_desc = st.text_area("Task Description (รายละเอียด)")
     
     if st.button("Create Task", type="primary", use_container_width=True):
         if not new_task_title.strip():
             st.warning("Please enter a Task Title.")
+        elif start_d > end_d:
+            st.error("วันที่เริ่มงาน ต้องมาก่อนวันสิ้นสุด!")
         else:
             with st.spinner("Creating task..."):
-                res = create_task(new_task_title, new_task_desc)
+                res = create_task(new_task_title, new_task_desc, start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"))
                 if res.status_code == 201:
                     st.success("Task created successfully!")
-                    st.rerun() # รีเฟรชหน้าจออัตโนมัติเพื่อให้งานใหม่โผล่ขึ้นมาทันที
+                    st.rerun()
                 else:
                     st.error(f"Failed to create task. Error: {res.status_code}")
-                    st.write(res.text)
