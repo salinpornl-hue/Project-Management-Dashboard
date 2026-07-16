@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.express as px
 import re
 from datetime import datetime, timedelta
 
@@ -59,7 +58,7 @@ t_col1, t_col2, t_col3 = st.columns([3, 1, 2])
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...", placeholder="พิมพ์ชื่อ Task...")
 with t_col2:
-    # เพิ่มตัวกรองสถานะที่ใช้งานได้จริง
+    # ตัวกรองสถานะที่ใช้งานได้จริง
     task_filter = st.selectbox("▽ FILTER STATUS", ["All Tasks", "IN PROGRESS", "DELAY", "COMPLETED"])
 with t_col3:
     st.markdown("<br>", unsafe_allow_html=True) # จัดปุ่มให้ตรงบรรทัด
@@ -72,7 +71,6 @@ st.markdown("---")
 # --- Data Processing ---
 tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
-
 
 if issues_only:
     df_data = []
@@ -95,7 +93,6 @@ if issues_only:
         assignees = ", ".join([a['login'] for a in task.get('assignees', [])]) if task.get('assignees') else "Unassigned"
         labels = ", ".join([l['name'] for l in task.get('labels', [])])
             
-        # [แก้ไข] เก็บ % เป็นตัวเลข Float แทน String เพื่อให้ทำ Progress Bar ในตารางได้
         plan_pct = min(100.0, max(0.0, ((TODAY - start_date).days / days) * 100)) if days > 0 else 0
         act_pct = calc_progress_from_checklist(body, status)
 
@@ -107,8 +104,8 @@ if issues_only:
             "START": start_date.date(),
             "FINISH": end_date.date(),
             "DAYS": days,
-            "% PLAN": plan_pct, # เป็นตัวเลข
-            "% ACT.": act_pct,  # เป็นตัวเลข
+            "% PLAN": plan_pct,
+            "% ACT.": act_pct, 
             "STATUS": status,
             "LABELS": labels,
             "_raw_start": start_date,
@@ -123,6 +120,8 @@ if issues_only:
         df = df[df["STATUS"] == task_filter]
         
     df = df.sort_values("_raw_start").reset_index(drop=True)
+    
+    # เอา _raw_body ออกก่อนนำไปแสดงผลในตาราง
     df_display = df.drop(columns=["_raw_start", "_raw_body"])
 
     # ==========================================
@@ -135,8 +134,7 @@ if issues_only:
         total_project_days = max(1, (max_date - min_date).days)
         
         def generate_mini_gantt(start, finish, status):
-            """สร้าง Mini Gantt แบบ Text ฝังในตาราง"""
-            TOTAL_BLOCKS = 20 # ความยาวของหลอด Gantt ในคอลัมน์
+            TOTAL_BLOCKS = 20
             start_offset = (start - min_date).days
             duration = (finish - start).days
             
@@ -144,7 +142,6 @@ if issues_only:
             blank_before = min(TOTAL_BLOCKS - bar_len, int(round((start_offset / total_project_days) * TOTAL_BLOCKS)))
             blank_after = max(0, TOTAL_BLOCKS - blank_before - bar_len)
             
-            # กำหนดสีตาม Status
             if status == "COMPLETED": bar_char = "🟩"
             elif status == "DELAY": bar_char = "🟥"
             else: bar_char = "🟦"
@@ -158,9 +155,9 @@ if issues_only:
 
         dynamic_height = max(400, len(df) * 38 + 50)
         
-        st.markdown("**📋 Project Master Table** *(รวม Timeline ไว้ในคอลัมน์)*")
+        st.markdown("**📋 Project Master Table** *(สามารถแก้ไขวันที่และสถานะในตารางได้โดยตรง)*")
         
-        # ตารางเดียวเต็มจอ ไม่มี col_left, col_right แล้ว
+        # ตารางเดียวเต็มจอ
         edited_df = st.data_editor(
             df_display,
             key="task_editor",
@@ -171,12 +168,61 @@ if issues_only:
                 "STATUS": st.column_config.SelectboxColumn("STATUS", options=["IN PROGRESS", "DELAY", "COMPLETED"]),
                 "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
                 "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD"),
-                # แปลงตัวเลขเปอร์เซ็นต์ให้เป็นหลอด Progress Bar ในตาราง
                 "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100),
                 "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100),
                 "TIMELINE": st.column_config.TextColumn("GANTT TIMELINE", help="สีเขียว=เสร็จ, สีฟ้า=กำลังทำ, สีแดง=ล่าช้า")
             }
         )
+
+        # ==========================================
+        # ⚙️ 2-Way Sync: ตรวจจับการแก้ไขและยิง API อัปเดต GitHub
+        # ==========================================
+        if st.session_state.task_editor["edited_rows"]:
+            st.toast('กำลังบันทึกข้อมูลไปที่ GitHub...', icon='🔄')
+            
+            # ดึงข้อมูลแถวที่มีการแก้ไข
+            edits = st.session_state.task_editor["edited_rows"]
+            
+            for row_idx, changes in edits.items():
+                issue_id = df["ID"].iloc[row_idx]
+                current_body = df["_raw_body"].iloc[row_idx]
+                
+                payload = {}
+                
+                # 1. กรณีผู้ใช้เปลี่ยน STATUS (Completed -> ปิดงาน / อื่นๆ -> เปิดงาน)
+                if "STATUS" in changes:
+                    new_status = changes["STATUS"]
+                    payload["state"] = "closed" if new_status == "COMPLETED" else "open"
+                    
+                # 2. กรณีผู้ใช้แก้ไขวันที่ START หรือ FINISH (ต้องไป Rewrite วันที่ใน Body)
+                if "START" in changes or "FINISH" in changes:
+                    # ดึงวันที่ใหม่ (ถ้าเปลี่ยนแค่วันเดียว ให้ใช้อีกวันจากข้อมูลเดิม)
+                    new_start = str(changes.get("START", df_display["START"].iloc[row_idx]))
+                    new_finish = str(changes.get("FINISH", df_display["FINISH"].iloc[row_idx]))
+                    
+                    # ค้นหาและแทนที่ Timeline เดิมใน Body
+                    if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
+                        new_body = re.sub(
+                            r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
+                            f"📅 **Timeline:** {new_start} to {new_finish}",
+                            current_body
+                        )
+                    else:
+                        new_body = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
+                    
+                    payload["body"] = new_body
+
+                # 3. ยิง API PATCH กลับไปที่ GitHub
+                if payload:
+                    update_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}"
+                    res = requests.patch(update_url, headers=get_headers(), json=payload)
+                    if res.status_code != 200:
+                        st.error(f"อัปเดตงาน #{issue_id} ไม่สำเร็จ")
+            
+            # เมื่อทำงานเสร็จ ให้ล้างแคชเพื่อให้โหลดข้อมูลใหม่ล่าสุดมาโชว์ และ Rerun จอ
+            st.cache_data.clear()
+            st.rerun()
+
     else:
         st.warning("ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา/ตัวกรอง")
 
@@ -213,7 +259,7 @@ with st.sidebar:
     with tab2:
         if 'df' in locals() and not df.empty:
             task_list = df['ID'].astype(str) + " : " + df['TASK NAME']
-            selected_task = st.selectbox("เลือกงานที่ต้องการอัปเดต", task_list)
+            selected_task = st.selectbox("เลือกงานที่ต้องการอัปเดต (หรือแก้ในตารางได้เลย)", task_list)
             
             if selected_task:
                 task_id = selected_task.split(" : ")[0]
