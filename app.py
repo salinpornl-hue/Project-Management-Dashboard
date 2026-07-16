@@ -111,7 +111,8 @@ if issues_only:
             "% ACT.": act_pct,  # เป็นตัวเลข
             "STATUS": status,
             "LABELS": labels,
-            "_raw_start": start_date 
+            "_raw_start": start_date,
+            "_raw_body": body 
         })
     
     df = pd.DataFrame(df_data)
@@ -122,7 +123,7 @@ if issues_only:
         df = df[df["STATUS"] == task_filter]
         
     df = df.sort_values("_raw_start").reset_index(drop=True)
-    df_display = df.drop(columns=["_raw_start"])
+    df_display = df.drop(columns=["_raw_start", "_raw_body"])
 
     # ==========================================
     # 🗂️ ส่วนแสดงผล: ตารางเดียวเต็มจอ (รวม Gantt ไว้ในคอลัมน์)
@@ -162,6 +163,7 @@ if issues_only:
         # ตารางเดียวเต็มจอ ไม่มี col_left, col_right แล้ว
         edited_df = st.data_editor(
             df_display,
+            key="task_editor",
             hide_index=True,
             use_container_width=True,
             height=dynamic_height,
