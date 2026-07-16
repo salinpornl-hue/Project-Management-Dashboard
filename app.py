@@ -73,18 +73,17 @@ st.markdown("---")
 tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
+
 if issues_only:
     df_data = []
     for i, task in enumerate(issues_only):
         body = task.get('body', '')
         start_str, end_str = parse_dates_from_body(body, task.get('created_at'))
-
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
         
         days = (end_date - start_date).days + 1
         
-        # ตรวจสอบสถานะ
         state = task.get('state')
         if state == 'closed':
             status = "COMPLETED"
@@ -93,11 +92,10 @@ if issues_only:
         else:
             status = "IN PROGRESS"
             
-        # การดึงผู้รับผิดชอบและ Labels
         assignees = ", ".join([a['login'] for a in task.get('assignees', [])]) if task.get('assignees') else "Unassigned"
         labels = ", ".join([l['name'] for l in task.get('labels', [])])
             
-        # คำนวณ % การทำงาน
+        # [แก้ไข] เก็บ % เป็นตัวเลข Float แทน String เพื่อให้ทำ Progress Bar ในตารางได้
         plan_pct = min(100.0, max(0.0, ((TODAY - start_date).days / days) * 100)) if days > 0 else 0
         act_pct = calc_progress_from_checklist(body, status)
 
@@ -106,80 +104,77 @@ if issues_only:
             "WBS": str(i+1),
             "TASK NAME": task['title'],
             "ASSIGNEE": assignees,
-            "START": start_date.date(), # <--- เปลี่ยนตรงนี้ (ใส่ .date() เพื่อตัดเวลาออก)
-            "FINISH": end_date.date(),  # <--- เปลี่ยนตรงนี้ (ใส่ .date() เพื่อตัดเวลาออก)
+            "START": start_date.date(),
+            "FINISH": end_date.date(),
             "DAYS": days,
-            "% PLAN": f"{plan_pct:.0f}%",
-            "% ACT.": f"{act_pct:.0f}%",
+            "% PLAN": plan_pct, # เป็นตัวเลข
+            "% ACT.": act_pct,  # เป็นตัวเลข
             "STATUS": status,
             "LABELS": labels,
             "_raw_start": start_date 
         })
-        
+    
     df = pd.DataFrame(df_data)
     
-    # 1. ใช้งาน Search
     if search_query:
         df = df[df["TASK NAME"].str.contains(search_query, case=False)]
-        
-    # 2. ใช้งาน Filter Status
     if task_filter != "All Tasks":
         df = df[df["STATUS"] == task_filter]
         
     df = df.sort_values("_raw_start").reset_index(drop=True)
     df_display = df.drop(columns=["_raw_start"])
 
-    # คำนวณความสูงแบบไดนามิก (จำนวน Row * 35px + ขอบ) ต่ำสุดที่ 400px
-    dynamic_height = max(400, len(df) * 35 + 100)
-
     # ==========================================
-    # 🗂️ ส่วนแสดงผล: ซ้าย (Table) ขวา (Gantt)
+    # 🗂️ ส่วนแสดงผล: ตารางเดียวเต็มจอ (รวม Gantt ไว้ในคอลัมน์)
     # ==========================================
     if not df.empty:
-        col_left, col_right = st.columns([1.5, 1.5])
+        # คำนวณช่วงเวลาทั้งหมดเพื่อทำ Mini Gantt
+        min_date = df_display["START"].min()
+        max_date = df_display["FINISH"].max()
+        total_project_days = max(1, (max_date - min_date).days)
         
-        with col_left:
-            st.markdown("**📋 Task Details** *(Interactive Table - สามารถแก้ไขข้อมูลได้)*")
-            # ใช้ st.data_editor แทน st.dataframe เพื่อให้เป็น Interactive Table
-            edited_df = st.data_editor(
-                df_display,
-                hide_index=True,
-                use_container_width=True,
-                height=dynamic_height,
-                column_config={
-                    "STATUS": st.column_config.SelectboxColumn("STATUS", options=["IN PROGRESS", "DELAY", "COMPLETED"]),
-                    "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
-                    "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD")
-                }
-            )
+        def generate_mini_gantt(start, finish, status):
+            """สร้าง Mini Gantt แบบ Text ฝังในตาราง"""
+            TOTAL_BLOCKS = 20 # ความยาวของหลอด Gantt ในคอลัมน์
+            start_offset = (start - min_date).days
+            duration = (finish - start).days
             
-        with col_right:
-            st.markdown("**📅 Gantt Chart Timeline**")
-            # เพิ่ม text="% ACT." เพื่อแสดงความคืบหน้าบนกราฟ
-            fig = px.timeline(
-                df, 
-                x_start="START", 
-                x_end="FINISH", 
-                y="TASK NAME", 
-                color="STATUS",
-                text="% ACT.", # แสดง % บนแท่งกราฟ
-                color_discrete_map={
-                    "COMPLETED": "#00C853", 
-                    "IN PROGRESS": "#29B6F6", 
-                    "DELAY": "#FF5252"        
-                },
-                hover_data=["ASSIGNEE", "DAYS", "% PLAN", "% ACT."]
-            )
-            fig.update_traces(textposition='inside', textfont_color='white')
-            fig.update_yaxes(autorange="reversed", title=None)
-            fig.update_xaxes(title=None, side="top")
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=30, b=0),
-                height=dynamic_height, # ใช้ความสูงแบบไดนามิก
-                showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            bar_len = max(1, int(round((duration / total_project_days) * TOTAL_BLOCKS)))
+            blank_before = min(TOTAL_BLOCKS - bar_len, int(round((start_offset / total_project_days) * TOTAL_BLOCKS)))
+            blank_after = max(0, TOTAL_BLOCKS - blank_before - bar_len)
+            
+            # กำหนดสีตาม Status
+            if status == "COMPLETED": bar_char = "🟩"
+            elif status == "DELAY": bar_char = "🟥"
+            else: bar_char = "🟦"
+                
+            return "⬜" * blank_before + bar_char * bar_len + "⬜" * blank_after
+
+        # เพิ่มคอลัมน์ GANTT TIMELINE
+        df_display.insert(6, "TIMELINE", df_display.apply(
+            lambda x: generate_mini_gantt(x["START"], x["FINISH"], x["STATUS"]), axis=1
+        ))
+
+        dynamic_height = max(400, len(df) * 38 + 50)
+        
+        st.markdown("**📋 Project Master Table** *(รวม Timeline ไว้ในคอลัมน์)*")
+        
+        # ตารางเดียวเต็มจอ ไม่มี col_left, col_right แล้ว
+        edited_df = st.data_editor(
+            df_display,
+            hide_index=True,
+            use_container_width=True,
+            height=dynamic_height,
+            column_config={
+                "STATUS": st.column_config.SelectboxColumn("STATUS", options=["IN PROGRESS", "DELAY", "COMPLETED"]),
+                "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
+                "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD"),
+                # แปลงตัวเลขเปอร์เซ็นต์ให้เป็นหลอด Progress Bar ในตาราง
+                "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100),
+                "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100),
+                "TIMELINE": st.column_config.TextColumn("GANTT TIMELINE", help="สีเขียว=เสร็จ, สีฟ้า=กำลังทำ, สีแดง=ล่าช้า")
+            }
+        )
     else:
         st.warning("ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา/ตัวกรอง")
 
