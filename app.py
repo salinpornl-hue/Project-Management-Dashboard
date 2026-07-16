@@ -31,7 +31,8 @@ TODAY_DATE = datetime.now().date()
 # ==========================================
 @st.cache_data(ttl=60)
 def get_tasks():
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=all&per_page=100"
+    # ดึงเฉพาะ issue ที่ state=open (เพื่อไม่ให้งานที่ถูกลบ/ปิดไปแล้วมาโผล่กวนใจ)
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=open&per_page=100"
     response = requests.get(url, headers=get_headers())
     return response.json() if response.status_code == 200 else []
 
@@ -119,7 +120,7 @@ if issues_only:
             status = "ON TRACK"
 
         assignees = task.get("assignees", [])
-        assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else "Unassigned"
+        assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else ""
         unique_name = f"{task['number']} - {task['title']}"
 
         df_data.append({
@@ -150,121 +151,152 @@ if issues_only:
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_cutoff, "STAGE": "Elapsed", "_raw_start": start_date})
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_cutoff, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
 
-    df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True)
-    df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True)
-    
-    if search_query:
-        df = df[df["TASK NAME"].str.contains(search_query, case=False)]
-        df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
-    if task_filter != "All":
-        df = df[df["STATUS"] == task_filter]
-        valid_tasks = df["UNIQUE_TASK"].tolist()
-        df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
+# สรุป Dataframe
+df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True) if not pd.DataFrame(df_data).empty else pd.DataFrame(columns=["ID", "UNIQUE_TASK", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT", "_raw_start", "_raw_body"])
+df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True) if gantt_data else pd.DataFrame()
+
+if search_query and not df.empty:
+    df = df[df["TASK NAME"].str.contains(search_query, case=False)]
+    df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
+if task_filter != "All" and not df.empty:
+    df = df[df["STATUS"] == task_filter]
+    valid_tasks = df["UNIQUE_TASK"].tolist()
+    df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
 
 # ==========================================
 # 7. UI: Bulk Edit Save Button & Zoom Controls
 # ==========================================
-if not df.empty:
-    st.markdown("##### 🔎 จัดการมุมมองและการแก้ไข (Controls)")
-    z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
-    
-    default_view_start = df["START"].min() - timedelta(days=2)
-    default_view_end = df["FINISH"].max() + timedelta(days=2)
-    
-    with z_col1:
-        view_start = st.date_input("🗓️ ซูมตั้งแต่ (View Start)", value=default_view_start)
-    with z_col2:
-        view_end = st.date_input("🗓️ จนถึง (View End)", value=default_view_end)
+st.markdown("##### 🔎 จัดการมุมมองและการแก้ไข (Controls)")
+z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
 
-    # 💡 ระบบแจ้งเตือนและปุ่มบันทึก Bulk Edit
-    pending_edits = st.session_state.get("task_editor", {}).get("edited_rows", {})
-    if pending_edits:
-        with z_col3:
-            st.warning(f"⚠️ คุณมีการแก้ไขที่ยังไม่ได้บันทึก {len(pending_edits)} รายการ")
-            if st.button("💾 บันทึกไปยัง GitHub", type="primary"):
-                has_error = False
+default_view_start = df["START"].min() - timedelta(days=2) if not df.empty else TODAY_DATE
+default_view_end = df["FINISH"].max() + timedelta(days=2) if not df.empty else TODAY_DATE + timedelta(days=30)
+
+with z_col1:
+    view_start = st.date_input("🗓️ ซูมตั้งแต่ (View Start)", value=default_view_start)
+with z_col2:
+    view_end = st.date_input("🗓️ จนถึง (View End)", value=default_view_end)
+
+# 💡 ระบบแจ้งเตือนและปุ่มบันทึกการ เพิ่ม/ลบ/แก้ไข (Bulk Edit)
+pending_changes = st.session_state.get("task_editor", {})
+edited_rows = pending_changes.get("edited_rows", {})
+added_rows = pending_changes.get("added_rows", [])
+deleted_rows = pending_changes.get("deleted_rows", [])
+
+total_changes = len(edited_rows) + len(added_rows) + len(deleted_rows)
+
+if total_changes > 0:
+    with z_col3:
+        st.warning(f"⚠️ คุณมีการเปลี่ยนแปลงที่ยังไม่ได้บันทึกทั้งหมด {total_changes} รายการ")
+        if st.button("💾 บันทึกไปยัง GitHub", type="primary"):
+            has_error = False
+            
+            with st.spinner("กำลังซิงค์ข้อมูล..."):
                 
-                # --- ลูปตรวจสอบและส่งข้อมูล ---
-                with st.spinner("กำลังซิงค์ข้อมูล..."):
-                    for row_idx, changes in pending_edits.items():
-                        issue_id = df["ID"].iloc[row_idx]
-                        current_body = df["_raw_body"].iloc[row_idx]
-                        current_title = df["TASK NAME"].iloc[row_idx]
-                        payload = {}
+                # --- 1. จัดการการลบแถว (ปิด Issue) ---
+                for row_idx in deleted_rows:
+                    issue_id = df["ID"].iloc[row_idx]
+                    payload = {"state": "closed"}
+                    requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
+
+                # --- 2. จัดการการเพิ่มแถวใหม่ (สร้าง Issue) ---
+                for new_row in added_rows:
+                    title = new_row.get("TASK NAME", "Untitled Task")
+                    start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
+                    finish = str(new_row.get("FINISH", TODAY_DATE.strftime("%Y-%m-%d")))
+                    assignee_str = str(new_row.get("ASSIGNEE", ""))
+                    
+                    body = f"📅 **Timeline:** {start} to {finish}\n\n- [ ] Checklist 1"
+                    payload = {"title": title, "body": body}
+                    
+                    if assignee_str.strip():
+                        # แยกชื่อด้วยลูกน้ำและตัดช่องว่าง เผื่อใส่หลายคน
+                        payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
                         
-                        # 1. จัดการการแก้ไขชื่อ Task (อัปเดต Title)
-                        if "TASK NAME" in changes:
-                            payload["title"] = changes["TASK NAME"]
-                            
-                        # 2. จัดการการแก้ไขวันที่ (อัปเดต Body)
-                        if "START" in changes or "FINISH" in changes:
-                            new_start_str = str(changes.get("START", df["START"].iloc[row_idx]))
-                            new_finish_str = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
-                            
-                            # 💡 Data Validation: ป้องกันวันสิ้นสุดมาก่อนวันเริ่มต้น
-                            n_start_date = datetime.strptime(new_start_str, "%Y-%m-%d").date()
-                            n_finish_date = datetime.strptime(new_finish_str, "%Y-%m-%d").date()
-                            
-                            if n_finish_date < n_start_date:
-                                st.error(f"❌ ตรวจพบข้อผิดพลาด: งาน '{current_title}' มีวันสิ้นสุดก่อนวันเริ่มต้น! กรุณาแก้ไขให้ถูกต้อง")
-                                has_error = True
-                                continue # ข้ามแถวที่ Error ไปก่อน ไม่ส่ง API
-                            
-                            # อัปเดต Timeline ใน Body
-                            if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
-                                payload["body"] = re.sub(
-                                    r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
-                                    f"📅 **Timeline:** {new_start_str} to {new_finish_str}", current_body)
-                            else:
-                                payload["body"] = f"📅 **Timeline:** {new_start_str} to {new_finish_str}\n\n{current_body}"
+                    requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
 
-                        # ยิง API ทยอยอัปเดตเฉพาะงานที่ไม่มี Error
-                        if payload and not has_error:
-                            requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
-                
-                if not has_error:
-                    st.success("✅ บันทึกข้อมูลทั้งหมดสำเร็จ!")
-                    st.cache_data.clear()
-                    st.rerun()
+                # --- 3. จัดการการแก้ไขแถวเดิม ---
+                for row_idx, changes in edited_rows.items():
+                    if row_idx in deleted_rows: # ถ้าแถวนี้ถูกลบไปแล้ว ให้ข้ามไป
+                        continue
+                        
+                    issue_id = df["ID"].iloc[row_idx]
+                    current_body = df["_raw_body"].iloc[row_idx]
+                    current_title = df["TASK NAME"].iloc[row_idx]
+                    payload = {}
+                    
+                    if "TASK NAME" in changes:
+                        payload["title"] = changes["TASK NAME"]
+                        
+                    if "ASSIGNEE" in changes:
+                        assignee_str = changes["ASSIGNEE"]
+                        payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
+                        
+                    if "START" in changes or "FINISH" in changes:
+                        new_start_str = str(changes.get("START", df["START"].iloc[row_idx]))
+                        new_finish_str = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
+                        
+                        n_start_date = datetime.strptime(new_start_str, "%Y-%m-%d").date()
+                        n_finish_date = datetime.strptime(new_finish_str, "%Y-%m-%d").date()
+                        
+                        if n_finish_date < n_start_date:
+                            st.error(f"❌ ตรวจพบข้อผิดพลาด: งาน '{current_title}' มีวันสิ้นสุดก่อนวันเริ่มต้น!")
+                            has_error = True
+                            continue
+                        
+                        if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
+                            payload["body"] = re.sub(
+                                r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}",
+                                f"📅 **Timeline:** {new_start_str} to {new_finish_str}", current_body)
+                        else:
+                            payload["body"] = f"📅 **Timeline:** {new_start_str} to {new_finish_str}\n\n{current_body}"
+
+                    if payload and not has_error:
+                        requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
+            
+            if not has_error:
+                st.success("✅ บันทึกข้อมูลทั้งหมดสำเร็จ!")
+                st.cache_data.clear()
+                st.rerun()
 
 # ==========================================
 # 8. Render Split-View UI
 # ==========================================
-if not df.empty:
-    st.info("💡 **คำแนะนำ:** คุณสามารถแก้ไข `TASK NAME`, `START`, `FINISH` ได้หลายรายการพร้อมกัน แล้วกดปุ่มบันทึกด้านบน (ห้ามกดเรียงลำดับที่หัวตาราง)")
-    
-    df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"])
+st.info("💡 **คำแนะนำ:** เลื่อนเมาส์ไปที่ตารางเพื่อกดเพิ่มแถว (ไอคอน + มุมล่างซ้าย) หรือเลือกแถวแล้วกดปุ่ม Delete บนคีย์บอร์ดเพื่อลบงาน")
 
-    ROW_HEIGHT = 35.5 
-    HEADER_HEIGHT = 43 
-    EXACT_HEIGHT = int((len(df) * ROW_HEIGHT) + HEADER_HEIGHT)
+df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"]) if not df.empty else pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
 
-    left_col, right_col = st.columns([0.45, 0.55])
-    
-    with left_col:
-        edited_df = st.data_editor(
-            df_display,
-            key="task_editor",
-            hide_index=True,
-            use_container_width=True,
-            height=EXACT_HEIGHT, 
-            column_config={
-                "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=True, width="small"),
-                "TASK NAME": st.column_config.TextColumn("TASK NAME", width="medium"), 
-                "START": st.column_config.DateColumn("START", format="DD MMM YYYY"), 
-                "FINISH": st.column_config.DateColumn("FINISH", format="DD MMM YYYY"), 
-                "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
-                
-                # 👇 แก้ 3 บรรทัดนี้: ลบ disabled=True ออก (เพราะมันแก้ไขไม่ได้อยู่แล้ว)
-                "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
-                "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
-                "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
-                "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
-            }
-        )
+ROW_HEIGHT = 35.5 
+HEADER_HEIGHT = 43 
+# เผื่อพื้นที่ให้ตารางเวลาว่างเปล่า
+EXACT_HEIGHT = int((len(df_display) * ROW_HEIGHT) + HEADER_HEIGHT) if len(df_display) > 0 else 150
 
-    with right_col:
+left_col, right_col = st.columns([0.45, 0.55])
+
+with left_col:
+    edited_df = st.data_editor(
+        df_display,
+        key="task_editor",
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic", # 👈 เปิดให้เพิ่ม/ลบ แถวได้
+        height=EXACT_HEIGHT if len(df_display) > 0 else None,
+        column_config={
+            "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small", help="ใส่ GitHub Username หากมีหลายคนให้คั่นด้วยลูกน้ำ (,)"), # 👈 เปิดให้แก้ Assignee
+            "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"),
+            "START": st.column_config.DateColumn("START", disabled=False, format="DD MMM YYYY"), 
+            "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD MMM YYYY"), 
+            "DAYS": st.column_config.NumberColumn("DAYS", disabled=True),
+            "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.2f%%", min_value=0, max_value=100),
+            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.2f%%", min_value=0, max_value=100),
+            "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
+            "% FUT": st.column_config.ProgressColumn("% FUT", format="%.2f%%", min_value=0, max_value=100),
+        }
+    )
+
+with right_col:
+    if not df_gantt.empty:
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
@@ -302,6 +334,5 @@ if not df.empty:
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-else:
-    st.info("ไม่มีงานในระบบ ปรับตั้งค่า GitHub หรือสร้าง Issue เพื่อเริ่มต้น")
+    else:
+        st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>ไม่มีข้อมูลแสดงในกราฟ</div>", unsafe_allow_html=True)
