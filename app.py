@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, time
 # ==========================================
 st.set_page_config(page_title="BuildPM | Project Management Dashboard", layout="wide", page_icon="🏗️")
 
-# Custom CSS for UI layout cleanup
 st.markdown("""
     <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
@@ -39,7 +38,6 @@ TODAY_DATE = datetime.now().date()
 # ==========================================
 @st.cache_data(ttl=60)
 def get_tasks():
-    # Fetch only open issues to keep active management organized
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=open&per_page=100"
     response = requests.get(url, headers=get_headers())
     return response.json() if response.status_code == 200 else []
@@ -62,6 +60,21 @@ def calc_progress_from_checklist(body, state):
         return (checked / total) * 100
     return 100.0 if state == "closed" else 0.0
 
+# 💡 Dynamic Day Counter Engine (Supports Calendar vs Work Week)
+def calculate_days_by_mode(start, end, mode):
+    if start > end:
+        return 0
+    if mode == "5-Day (Work Week)":
+        working_days = 0
+        current = start
+        while current <= end:
+            if current.weekday() < 5:  # 0 to 4 represent Monday to Friday
+                working_days += 1
+            current += timedelta(days=1)
+        return working_days
+    else:
+        return (end - start).days + 1
+
 # ==========================================
 # 4. Fetch Base Data
 # ==========================================
@@ -73,7 +86,7 @@ issues_only = [t for t in tasks if 'pull_request' not in t]
 # ==========================================
 st.markdown("### 🏗️ BuildPM - Advanced Project Tracking")
 
-t_col1, t_col2, t_col3, t_col4, t_col5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+t_col1, t_col2, t_col3, t_col4, t_col5, t_col6 = st.columns([2, 1.2, 1.2, 1.2, 1.5, 1.1])
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...")
 with t_col2:
@@ -87,6 +100,9 @@ with t_col3:
 with t_col4:
     task_filter = st.selectbox("▽ STATUS FILTER", ["All", "ON TRACK", "DELAY", "COMPLETED"])
 with t_col5:
+    # 💡 Added Day Calculation Mode Selector Toggle
+    day_mode = st.selectbox("📅 DAY CALCULATION", ["7-Day (Calendar)", "5-Day (Work Week)"])
+with t_col6:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Sync GitHub", type="primary", use_container_width=True):
         st.cache_data.clear()
@@ -109,8 +125,9 @@ if issues_only:
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
         
-        total_days = (end_date - start_date).days + 1
-        elapsed_days = (cut_off_date - start_date).days + 1
+        # 💡 Apply dynamic day counting engine
+        total_days = calculate_days_by_mode(start_date, end_date, day_mode)
+        elapsed_days = calculate_days_by_mode(start_date, cut_off_date, day_mode)
         
         if total_days > 0:
             plan_pct = max(0.0, min(100.0, (elapsed_days / total_days) * 100))
@@ -184,7 +201,6 @@ with z_col1:
 with z_col2:
     view_end = st.date_input("🗓️ Zoom View To", value=default_view_end)
 
-# Bulk Change tracking mechanisms via Streamlit State
 pending_changes = st.session_state.get("task_editor", {})
 edited_rows = pending_changes.get("edited_rows", {})
 added_rows = pending_changes.get("added_rows", [])
@@ -199,12 +215,10 @@ if total_changes > 0:
             has_error = False
             
             with st.spinner("Syncing data updates with GitHub..."):
-                # 1. Processing Row Deletions (Closing Items)
                 for row_idx in deleted_rows:
                     issue_id = df["ID"].iloc[row_idx]
                     requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json={"state": "closed"})
 
-                # 2. Processing Row Additions (New Issues)
                 for new_row in added_rows:
                     title = new_row.get("TASK NAME", "Untitled Task")
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
@@ -219,7 +233,6 @@ if total_changes > 0:
                         
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
 
-                # 3. Processing Column Modifications
                 for row_idx, changes in edited_rows.items():
                     if row_idx in deleted_rows:
                         continue
