@@ -83,7 +83,7 @@ tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
 # ==========================================
-# 5. UI: Top Toolbar (เพิ่ม task_filter กลับเข้ามาและจัดสัดส่วนอย่างสมดุล)
+# 5. UI: Top Toolbar
 # ==========================================
 st.markdown("### 🏗️ BuildPM - Advanced Project Tracking")
 
@@ -91,13 +91,11 @@ raw_dates = [parse_dates_from_body(t.get('body', ''), t.get('created_at')) for t
 default_start = min([datetime.strptime(d[0], "%Y-%m-%d").date() for d in raw_dates]) - timedelta(days=2) if raw_dates else TODAY_DATE - timedelta(days=5)
 default_end = max([datetime.strptime(d[1], "%Y-%m-%d").date() for d in raw_dates]) + timedelta(days=5) if raw_dates else TODAY_DATE + timedelta(days=25)
 
-# แถวปุ่มควบคุมแบบ 8 คอลัมน์เฉลี่ยความกว้างให้พอดีหน้าจอพอเป๊ะ
 t_col1, t_col2, t_col3, t_col4, t_col5, t_col6, t_col7, t_col8 = st.columns([1.5, 1.2, 1.1, 1.1, 1.0, 1.0, 1.3, 0.9])
 
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...")
 with t_col2:
-    # 💡 กู้คืนตัวเลือกสำหรับกรองสถานะของงานกลับมาเรียบร้อยครับ
     task_filter = st.selectbox("▽ STATUS FILTER", ["All", "ON TRACK", "DELAY", "COMPLETED"])
 with t_col3:
     cut_off_date = st.date_input("✂️ CUT-OFF DATE", value=TODAY_DATE)
@@ -170,24 +168,24 @@ if issues_only:
             "_raw_body": body 
         })
         
+        # ปรับปรุงให้ Gantt Chart วาดเป็น 1 แท่งเต็มตามสถานะจริงของตัวงาน
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
-        gantt_cutoff = datetime.combine(cut_off_date, time(23, 59, 59))
-        
-        if gantt_finish <= gantt_cutoff:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_finish, "STAGE": "Elapsed", "_raw_start": start_date})
-        elif gantt_start > gantt_cutoff:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
-        else:
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_cutoff, "STAGE": "Elapsed", "_raw_start": start_date})
-            gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_cutoff, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
+        gantt_data.append({
+            "UNIQUE_TASK": unique_name, 
+            "TASK NAME": task['title'], 
+            "START": gantt_start, 
+            "FINISH": gantt_finish, 
+            "STATUS": status, 
+            "_raw_start": start_date
+        })
 
 df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True) if not pd.DataFrame(df_data).empty else pd.DataFrame(columns=["ID", "UNIQUE_TASK", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT", "_raw_start", "_raw_body"])
 df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True) if gantt_data else pd.DataFrame()
 
 if search_query and not df.empty:
     df = df[df["TASK NAME"].str.contains(search_query, case=False)]
-    df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].str.contains(search_query, case=False)]
+    df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
 if task_filter != "All" and not df.empty:
     df = df[df["STATUS"] == task_filter]
     valid_tasks = df["UNIQUE_TASK"].tolist()
@@ -273,26 +271,33 @@ with left_col:
             "START": st.column_config.DateColumn("START", disabled=False, format="DD/MM/YYYY", width="small"), 
             "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD/MM/YYYY", width="small"), 
             "DAYS": st.column_config.NumberColumn("DAYS", disabled=True, width="small"),
-            "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
-            "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "%% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            # 💡 ล็อกคอลลัมน์ % ACT. เรียบร้อย ป้องกันยูสเซอร์แก้ไขข้อมูลผิดพลาด
+            "%% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100, width="small", disabled=True),
             "STATUS": st.column_config.TextColumn("STATUS", disabled=True, width="small"),
-            "% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
+            "%% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
         }
     )
 
 with right_col:
-    st.markdown("##### 📅 Work-Week Dynamic Gantt Chart")
+    # 💡 เพิ่มป้ายกำกับสีที่สวยงามเหนือกราฟ เพื่อให้อ่านง่ายขึ้น
+    st.markdown("##### 📅 Gantt Chart &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #81C784; padding-left:4px;'>COMPLETED</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #90CAF9; padding-left:4px;'>ON TRACK</span> &nbsp;&nbsp; <span style='font-size:12px; border-left:10px solid #EF9A9A; padding-left:4px;'>DELAY</span>", unsafe_allow_html=True)
     if not df_gantt.empty:
+        # 💡 ปรับเปลี่ยนฟิลด์สีตัวแทนแท่งกราฟจาก STAGE ไปเป็น STATUS
         fig = px.timeline(
             df_gantt, 
             x_start="START", 
             x_end="FINISH", 
             y="UNIQUE_TASK", 
-            color="STAGE",
-            color_discrete_map={"Elapsed": "#cde0f5", "Future": "#e8f5e9"}
+            color="STATUS",
+            color_discrete_map={
+                "COMPLETED": "#81C784", # สีเขียวพาสเทล
+                "ON TRACK": "#90CAF9",  # สีฟ้าพาสเทล
+                "DELAY": "#EF9A9A"      # สีแดงพาสเทล 
+            }
         )
         
-        fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.9)
+        fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.95)
         
         ordered_tasks = df["UNIQUE_TASK"].tolist()
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
