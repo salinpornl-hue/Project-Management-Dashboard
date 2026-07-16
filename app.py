@@ -5,22 +5,30 @@ import plotly.express as px
 import re
 from datetime import datetime, timedelta
 
-# 1. Page Configuration (ตั้งค่าเป็น Wide เพื่อใช้พื้นที่เต็มจอ)
+# ==========================================
+# 1. Page Configuration
+# ==========================================
 st.set_page_config(page_title="BuildPM | Professional View", layout="wide", page_icon="🏗️")
 
-# 2. Load Secrets
+# ==========================================
+# 2. GitHub Secrets & Setup
+# ==========================================
 try:
     REPO_OWNER = st.secrets["REPO_OWNER"]
     REPO_NAME = st.secrets["REPO_NAME"]
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 except Exception as e:
-    st.error("Missing credentials in Streamlit Secrets. Please check your .streamlit/secrets.toml file.")
+    st.error("⚠️ Missing credentials in Streamlit Secrets. Please check your .streamlit/secrets.toml file.")
     st.stop()
 
 def get_headers():
     return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
-# --- Data Fetching & Parsing ---
+TODAY_DATE = datetime.now().date()
+
+# ==========================================
+# 3. Helper Functions
+# ==========================================
 @st.cache_data(ttl=60)
 def get_tasks():
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=all&per_page=100"
@@ -45,30 +53,13 @@ def calc_progress_from_checklist(body, status):
         return (checked / total) * 100
     return 100.0 if status == "COMPLETED" else 0.0
 
-TODAY_DATE = datetime.now().date()
-
-# --- UI: Top Toolbar (คล้ายในรูป) ---
-st.markdown("### 🏗️ BuildPM - Project Management Suite")
-
-t_col1, t_col2, t_col3, t_col4 = st.columns([3, 2, 2, 1])
-with t_col1:
-    search_query = st.text_input("🔍 Search tasks...", placeholder="พิมพ์ชื่อ Task...")
-with t_col2:
-    display_view = st.selectbox("☷ DISPLAY VIEW", ["Split-View (PM Style)", "Kanban Board"])
-with t_col3:
-    task_filter = st.selectbox("▽ FILTER STATUS", ["All Tasks", "IN PROGRESS", "DELAY", "COMPLETED"])
-with t_col4:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 Sync GitHub", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-
-st.markdown("---")
-
-# --- Data Processing ---
+# ==========================================
+# 4. Data Processing (ดึงและเตรียมข้อมูลก่อน)
+# ==========================================
 tasks = get_tasks()
 issues_only = [t for t in tasks if 'pull_request' not in t]
 
+df = pd.DataFrame()
 if issues_only:
     df_data = []
     for i, task in enumerate(issues_only):
@@ -105,29 +96,62 @@ if issues_only:
         })
     
     df = pd.DataFrame(df_data)
-    
+    # เรียงลำดับตามวันที่เริ่ม และ Reset Index ให้แถวตรงกับกราฟ
+    df = df.sort_values("_raw_start").reset_index(drop=True)
+
+# หาค่า Target Date พื้นฐานจากวันจบโปรเจกต์ที่ไกลที่สุด
+default_target = df["FINISH"].max() if not df.empty else TODAY_DATE + timedelta(days=30)
+
+# ==========================================
+# 5. UI: Top Toolbar
+# ==========================================
+st.markdown("### 🏗️ BuildPM - Project Management Suite")
+
+# ปรับคอลัมน์ด้านบนเพื่อเพิ่มที่เลือกวันที่ TARGET
+t_col1, t_col2, t_col3, t_col4, t_col5 = st.columns([2.5, 1.5, 1.5, 1.5, 1])
+with t_col1:
+    search_query = st.text_input("🔍 Search tasks...", placeholder="พิมพ์ชื่อ Task...")
+with t_col2:
+    display_view = st.selectbox("☷ DISPLAY VIEW", ["Split-View (PM Style)", "Kanban Board"])
+with t_col3:
+    task_filter = st.selectbox("▽ FILTER STATUS", ["All Tasks", "IN PROGRESS", "DELAY", "COMPLETED"])
+with t_col4:
+    # เพิ่ม Date Input ให้คนใช้เปลี่ยนเส้น TARGET แดงๆ ได้เอง
+    target_date = st.date_input("🎯 TARGET DATE", value=default_target)
+with t_col5:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🔄 Sync", type="primary", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+st.markdown("---")
+
+# ==========================================
+# 6. Apply Filters & Render View
+# ==========================================
+if not df.empty:
+    # กรองข้อมูลตามที่เลือกจาก Toolbar
     if search_query:
         df = df[df["TASK NAME"].str.contains(search_query, case=False)]
     if task_filter != "All Tasks":
         df = df[df["STATUS"] == task_filter]
         
-    # เรียงลำดับตามวันที่เริ่ม และ Reset Index ให้แถวตรงกับกราฟ
-    df = df.sort_values("_raw_start").reset_index(drop=True)
     df_display = df.drop(columns=["_raw_start", "_raw_body"])
 
     if not df.empty:
         if display_view == "Split-View (PM Style)":
             
-            # คำนวณความสูงแบบไดนามิก เพื่อให้ตารางกับกราฟสูงเท่ากัน (ป้องกันการเกิด Scroll bar ซ้อน)
-            # ความสูง 1 แถวของ Streamlit ประมาณ 35px + ขอบและหัวตาราง
+            # คำนวณความสูงแบบไดนามิก ป้องกัน Scroll bar ซ้อน
             ROW_HEIGHT = 35
             DYNAMIC_HEIGHT = max(300, (len(df) * ROW_HEIGHT) + 42)
 
-            # --- แบ่งครึ่งหน้าจอ (ซ้าย 45% ตาราง : ขวา 55% กราฟ Gantt) ---
+            # แบ่งครึ่งหน้าจอ (ซ้าย 45% : ขวา 55%)
             left_col, right_col = st.columns([0.45, 0.55])
             
             with left_col:
-                # ตาราง Data Editor (ฝั่งซ้าย)
+                # ----------------------------------
+                # [ฝั่งซ้าย] Data Editor (ตารางข้อมูล)
+                # ----------------------------------
                 edited_df = st.data_editor(
                     df_display,
                     key="task_editor",
@@ -148,8 +172,9 @@ if issues_only:
                 )
 
             with right_col:
-                # กราฟ Gantt Chart (ฝั่งขวา)
-                # ใช้ Plotly สร้างแท่ง Gantt แบบขอบมน (รูปทรงแท่ง)
+                # ----------------------------------
+                # [ฝั่งขวา] Plotly Gantt Chart
+                # ----------------------------------
                 fig = px.timeline(
                     df, 
                     x_start="START", 
@@ -157,36 +182,59 @@ if issues_only:
                     y="TASK NAME", 
                     color="STATUS",
                     color_discrete_map={
-                        "COMPLETED": "#b5e5c5", # สีเขียวอ่อนคล้ายในรูป
-                        "IN PROGRESS": "#cde0f5", # สีฟ้าอ่อน
-                        "DELAY": "#f5cdcd"  # สีแดงอ่อน
+                        "COMPLETED": "#b5e5c5", 
+                        "IN PROGRESS": "#cde0f5", 
+                        "DELAY": "#f5cdcd"  
                     }
                 )
                 
-                # กลับด้านแกน Y ให้แถวบนสุดตรงกับตาราง และ ซ่อนชื่อ Task ในแกน Y ทิ้ง (เพราะมีในตารางฝั่งซ้ายแล้ว)
+                # ซ่อนแกน Y กลับด้านให้อิงกับตาราง
                 fig.update_yaxes(autorange="reversed", visible=False, showgrid=False)
                 
-                # ย้ายปฏิทินแกน X ไปไว้ด้านบน และจัดรูปแบบให้อ่านง่าย
+                # ตั้งค่าแกน X ให้อยู่ด้านบน
                 fig.update_xaxes(
                     side="top", 
                     title=None,
-                    tickformat="%d %b\n%a", # เช่น 21 Jun / Mon
+                    tickformat="%d %b\n%a", 
                     showgrid=True, gridcolor='rgba(200, 200, 200, 0.3)',
                     dtick="86400000" # ขีดบอกทุกๆ 1 วัน
                 )
                 
-                # ปรับแต่ง Layout ให้พอดีกับความสูงของตารางฝั่งซ้ายเป๊ะๆ
+                # --- เพิ่มเส้น CUT-OFF (เส้นประ) ---
+                fig.add_vline(
+                    x=TODAY_DATE, 
+                    line_width=2, 
+                    line_dash="dash", 
+                    line_color="#5D3FD3", 
+                    annotation_text="CUT-OFF", 
+                    annotation_position="top left",
+                    annotation=dict(font_size=10, font_color="white", bgcolor="#5D3FD3", borderpad=3, bordercolor="white", borderwidth=1)
+                )
+
+                # --- เพิ่มเส้น TARGET (เส้นทึบ) ---
+                fig.add_vline(
+                    x=target_date, 
+                    line_width=2, 
+                    line_dash="solid", 
+                    line_color="#E3242B", 
+                    annotation_text="TARGET", 
+                    annotation_position="top right",
+                    annotation=dict(font_size=10, font_color="white", bgcolor="#E3242B", borderpad=3, bordercolor="white", borderwidth=1)
+                )
+                
+                # จัด Layout
                 fig.update_layout(
-                    margin=dict(l=0, r=0, t=40, b=0), # ลดขอบให้ชิด
+                    margin=dict(l=0, r=0, t=50, b=0), # เว้นที่ให้ Annotation ข้างบน
                     height=DYNAMIC_HEIGHT,
-                    showlegend=False, # ซ่อน Legend เพื่อประหยัดพื้นที่
+                    showlegend=False,
                     plot_bgcolor="white"
                 )
                 
-                # ลบปุ่ม Toolbars ของ Plotly ออกให้ดูคลีนเหมือนหน้าจอโปรแกรม
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-            # --- 2-Way Sync Logic (ทำงานเมื่อแก้ข้อมูลในตารางฝั่งซ้าย) ---
+            # ----------------------------------
+            # 7. 2-Way Sync Logic (อัปเดตกลับ GitHub)
+            # ----------------------------------
             if st.session_state.task_editor["edited_rows"]:
                 st.toast('กำลังซิงค์ข้อมูลกับ GitHub...', icon='🔄')
                 edits = st.session_state.task_editor["edited_rows"]
@@ -213,12 +261,12 @@ if issues_only:
                 st.cache_data.clear()
                 st.rerun()
 
-        # (ซ่อน Kanban Board ไว้เผื่อสลับดู)
         elif display_view == "Kanban Board":
             st.markdown("### 🗂️ Project Kanban Board")
-            # โค้ด Kanban เดิม... (ละไว้เพื่อความกระชับ)
+            st.info("กำลังแสดงผลแบบ Gantt Chart กรุณาเลือก Split-View จากด้านบนเพื่อดูตารางเวลา")
+            # ถ้าอยากใส่ Kanban แบบในโค้ดเดิม สามารถแทรกเข้ามาตรงนี้ได้เลยครับ
 
     else:
         st.warning("ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา/ตัวกรอง")
 else:
-    st.info("ไม่มีงานในระบบ กดแถบด้านข้างเพื่อสร้างงานใหม่")
+    st.info("ไม่มีงานในระบบ ปรับตั้งค่า GitHub หรือสร้าง Issue เพื่อเริ่มต้น")
