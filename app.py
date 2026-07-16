@@ -53,12 +53,10 @@ def parse_dates_from_body(body, created_at):
     return start, end
 
 def calc_progress_from_checklist(body, state):
-    # ตรวจสอบก่อนว่ามีแท็กความคืบหน้าที่ถูกพิมพ์ตรงจากตารางเซฟไว้หรือไม่
     match = re.search(r"📊 \*\*Actual Progress:\*\* (\d+(?:\.\d+)?)%", str(body))
     if match:
         return min(100.0, max(0.0, float(match.group(1))))
         
-    # หากไม่มีแท็กพิมพ์ตรง ให้ถอยกลับไปคำนวณจากระบบ Checklist บน GitHub ตามเดิม
     if not body:
         return 100.0 if state == "closed" else 0.0
     checked = body.lower().count("[x]")
@@ -122,85 +120,111 @@ with t_col8:
 st.markdown("---")
 
 # ==========================================
-# 6. Data Processing
+# 6. Reactive Data Processing Engine
 # ==========================================
 df_data = []
-gantt_data = []
-
 if issues_only:
-    for i, task in enumerate(issues_only):
+    for task in issues_only:
         body = task.get('body', '')
         state = task.get('state')
         start_str, end_str = parse_dates_from_body(body, task.get('created_at'))
         
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+        act_pct = calc_progress_from_checklist(body, state)
+        
+        assignees = task.get("assignees", [])
+        assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else ""
+        
+        df_data.append({
+            "ID": task['number'],
+            "TASK NAME": task['title'],
+            "ASSIGNEE": assignee_names, 
+            "START": start_date,
+            "FINISH": end_date,
+            "% ACT.": act_pct,
+            "_raw_body": body,
+            "_state": state
+        })
+
+# สร้าง Master Dataframe และล็อก Index เรียงตามวันที่เริ่มต้น
+if df_data:
+    df = pd.DataFrame(df_data).sort_values("START").reset_index(drop=True)
+else:
+    df = pd.DataFrame(columns=["ID", "TASK NAME", "ASSIGNEE", "START", "FINISH", "% ACT.", "_raw_body", "_state"])
+
+# 💡 ไฮไลต์เด็ด: ดักจับและฝังค่า LIVE EDITS ที่ผู้ใช้พิมพ์สดบนตารางลงในแบบจำลองข้อมูลทันทีก่อนการประมวลผล
+pending_changes = st.session_state.get("task_editor", {})
+edited_rows = pending_changes.get("edited_rows", {})
+
+for row_str, changes in edited_rows.items():
+    row_idx = int(row_str)
+    if row_idx < len(df):
+        for col_name, new_val in changes.items():
+            if col_name in ["START", "FINISH"]:
+                df.at[row_idx, col_name] = datetime.strptime(new_val, "%Y-%m-%d").date() if isinstance(new_val, str) else new_val
+            elif col_name == "% ACT.":
+                df.at[row_idx, col_name] = float(new_val) if new_val is not None else 0.0
+            else:
+                df.at[row_idx, col_name] = new_val
+
+# 🔄 ประมวลผลคำนวณ STATUS และวาด Gantt Chart แบบ Reactive ทันทีหลังได้รับ Live Edits
+gantt_data = []
+if not df.empty:
+    for idx, row in df.iterrows():
+        start_date = row["START"]
+        end_date = row["FINISH"]
+        act_pct = row["% ACT."]
+        state = row["_state"]
         
         total_days = calculate_days_by_mode(start_date, end_date, day_mode)
         elapsed_days = calculate_days_by_mode(start_date, cut_off_date, day_mode)
         
-        if total_days > 0:
-            plan_pct = max(0.0, min(100.0, (elapsed_days / total_days) * 100))
-        else:
-            plan_pct = 0.0
-            
-        act_pct = calc_progress_from_checklist(body, state)
+        plan_pct = max(0.0, min(100.0, (elapsed_days / total_days) * 100)) if total_days > 0 else 0.0
         fut_pct = 100.0 - plan_pct
         
-        if state == 'closed':
+        # 🔗 ผูกสูตรสถานะโครงการเข้ากับตัวเลข % ACT. ที่เปลี่ยนไปแบบสด ๆ
+        if state == 'closed' or act_pct >= 100.0:
             status = "COMPLETED"
         elif act_pct < plan_pct:
             status = "DELAY"
         else:
             status = "ON TRACK"
-
-        assignees = task.get("assignees", [])
-        assignee_names = ", ".join([a["login"] for a in assignees]) if assignees else ""
-        unique_name = f"{task['number']} - {task['title']}"
-
-        df_data.append({
-            "ID": task['number'],
-            "UNIQUE_TASK": unique_name,
-            "ASSIGNEE": assignee_names, 
-            "TASK NAME": task['title'],
-            "START": start_date,
-            "FINISH": end_date,
-            "DAYS": total_days,
-            "% PLAN": plan_pct,
-            "% ACT.": act_pct, 
-            "STATUS": status,
-            "% FUT": fut_pct,
-            "_raw_start": start_date,
-            "_raw_body": body 
-        })
+            
+        unique_name = f"{row['ID']} - {row['TASK NAME']}"
+        
+        df.at[idx, "DAYS"] = total_days
+        df.at[idx, "% PLAN"] = plan_pct
+        df.at[idx, "STATUS"] = status
+        df.at[idx, "% FUT"] = fut_pct
+        df.at[idx, "UNIQUE_TASK"] = unique_name
         
         gantt_start = datetime.combine(start_date, time(0, 0, 0))
         gantt_finish = datetime.combine(end_date, time(23, 59, 59))
         gantt_data.append({
-            "UNIQUE_TASK": unique_name, 
-            "TASK NAME": task['title'], 
-            "START": gantt_start, 
-            "FINISH": gantt_finish, 
-            "STATUS": status, 
-            "_raw_start": start_date
+            "UNIQUE_TASK": unique_name,
+            "TASK NAME": row['TASK NAME'],
+            "START": gantt_start,
+            "FINISH": gantt_finish,
+            "STATUS": status
         })
+        
+df_gantt = pd.DataFrame(gantt_data) if gantt_data else pd.DataFrame()
 
-df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True) if not pd.DataFrame(df_data).empty else pd.DataFrame(columns=["ID", "UNIQUE_TASK", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT", "_raw_start", "_raw_body"])
-df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True) if gantt_data else pd.DataFrame()
-
+# กรองผลลัพธ์การแสดงผล (โดยยังคงรักษา Index เดิมของแถวไว้เพื่อให้ตารางและโมเดลบันทึกคุยกันรู้เรื่อง)
 if search_query and not df.empty:
     df = df[df["TASK NAME"].str.contains(search_query, case=False)]
-    df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
+    if not df_gantt.empty:
+        df_gantt = df_gantt[df_gantt["TASK NAME"].str.contains(search_query, case=False)]
+        
 if task_filter != "All" and not df.empty:
     df = df[df["STATUS"] == task_filter]
-    valid_tasks = df["UNIQUE_TASK"].tolist()
-    df_gantt = df_gantt[df_gantt["UNIQUE_TASK"].isin(valid_tasks)]
+    if not df_gantt.empty:
+        df_gantt = df_gantt[df_gantt["STATUS"] == task_filter]
 
 # ==========================================
-# 7. UI: Bulk Edit Save System
+# 7. UI: Bulk Edit Save System (ระบบเซฟอัจฉริยะอ้างอิงตามดัชนีจำลองต้นทาง)
 # ==========================================
-pending_changes = st.session_state.get("task_editor", {})
-edited_rows = pending_changes.get("edited_rows", {})
 added_rows = pending_changes.get("added_rows", [])
 deleted_rows = pending_changes.get("deleted_rows", [])
 total_changes = len(edited_rows) + len(added_rows) + len(deleted_rows)
@@ -213,9 +237,12 @@ if total_changes > 0:
         if st.button("💾 Save Changes to GitHub", type="primary", use_container_width=True):
             has_error = False
             with st.spinner("Saving configurations..."):
-                for row_idx in deleted_rows:
-                    issue_id = df["ID"].iloc[row_idx]
+                # ลบชิ้นงาน (ปิดประเด็น)
+                for row_str in deleted_rows:
+                    row_idx = int(row_str)
+                    issue_id = df.loc[row_idx, "ID"]
                     requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json={"state": "closed"})
+                # สร้างชิ้นงานใหม่
                 for new_row in added_rows:
                     title = new_row.get("TASK NAME", "Untitled Task")
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
@@ -226,27 +253,28 @@ if total_changes > 0:
                     if assignee_str.strip():
                         payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
-                
-                for row_idx, changes in edited_rows.items():
+                # บันทึกข้อมูลที่แก้ไขสดลงเซิร์ฟเวอร์
+                for row_str, changes in edited_rows.items():
+                    row_idx = int(row_str)
                     if row_idx in deleted_rows: continue
-                    issue_id = df["ID"].iloc[row_idx]
-                    current_body = str(df["_raw_body"].iloc[row_idx])
+                    issue_id = df.loc[row_idx, "ID"]
+                    current_body = str(df.loc[row_idx, "_raw_body"])
                     payload = {}
-                    if "TASK NAME" in changes: payload["title"] = changes["TASK NAME"]
+                    
+                    if "TASK NAME" in changes: payload["title"] = df.loc[row_idx, "TASK NAME"]
                     if "ASSIGNEE" in changes:
-                        payload["assignees"] = [a.strip() for a in changes["ASSIGNEE"].split(",") if a.strip()]
+                        payload["assignees"] = [a.strip() for a in df.loc[row_idx, "ASSIGNEE"].split(",") if a.strip()]
                     
                     if "START" in changes or "FINISH" in changes:
-                        new_start = str(changes.get("START", df["START"].iloc[row_idx]))
-                        new_finish = str(changes.get("FINISH", df["FINISH"].iloc[row_idx]))
+                        new_start = str(df.loc[row_idx, "START"])
+                        new_finish = str(df.loc[row_idx, "FINISH"])
                         if re.search(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", current_body):
                             current_body = re.sub(r"📅 \*\*Timeline:\*\* \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}", f"📅 **Timeline:** {new_start} to {new_finish}", current_body)
                         else:
                             current_body = f"📅 **Timeline:** {new_start} to {new_finish}\n\n{current_body}"
                     
-                    # ตรวจจับกรณีผู้ใช้แก้ไขตัวเลขจากตาราง แล้วเขียนบันทึกฝังลงไปในเนื้อหา GitHub
                     if "% ACT." in changes:
-                        new_act = changes["% ACT."]
+                        new_act = df.loc[row_idx, "% ACT."]
                         if re.search(r"📊 \*\*Actual Progress:\*\* \d+(?:\.\d+)?%", current_body):
                             current_body = re.sub(r"📊 \*\*Actual Progress:\*\* \d+(?:\.\d+)?%", f"📊 **Actual Progress:** {new_act}%", current_body)
                         else:
@@ -265,7 +293,9 @@ if total_changes > 0:
 # ==========================================
 # 8. Render Split-View UI
 # ==========================================
-df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"]) if not df.empty else pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
+df_display = pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
+if not df.empty:
+    df_display = df[["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"]]
 
 ROW_HEIGHT = 35.6
 HEADER_HEIGHT = 40.0
@@ -292,7 +322,6 @@ with left_col:
             "FINISH": st.column_config.DateColumn("FINISH", format="DD/MM/YYYY", width="small"), 
             "DAYS": st.column_config.NumberColumn("DAYS", width="small"),
             "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100, width="small"),
-            # 💡 แก้ไขจุดนี้: เปลี่ยนจาก ProgressColumn เป็น NumberColumn เพื่อเปิดให้คีย์ตัวเลขหรือกดเลื่อนเปอร์เซ็นต์ได้จริงแล้วครับ!
             "% ACT.": st.column_config.NumberColumn("% ACT.", format="%d%%", min_value=0, max_value=100, width="small"),
             "STATUS": st.column_config.TextColumn("STATUS", width="small"),
             "% FUT": st.column_config.ProgressColumn("% FUT", format="%.0f%%", min_value=0, max_value=100, width="small"),
@@ -317,7 +346,7 @@ with right_col:
         
         fig.update_traces(marker_line_color='rgba(100, 120, 150, 0.4)', marker_line_width=1, opacity=0.95)
         
-        ordered_tasks = df["UNIQUE_TASK"].tolist()
+        ordered_tasks = df["UNIQUE_TASK"].tolist() if not df.empty else []
         fig.update_yaxes(autorange="reversed", categoryorder='array', categoryarray=ordered_tasks, visible=False, showgrid=False)
         
         xaxes_config = dict(
