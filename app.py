@@ -8,7 +8,15 @@ from datetime import datetime, timedelta, time
 # ==========================================
 # 1. Page Configuration
 # ==========================================
-st.set_page_config(page_title="BuildPM | Advanced Split-View", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="BuildPM | Project Management Dashboard", layout="wide", page_icon="🏗️")
+
+# Custom CSS for UI layout cleanup
+st.markdown("""
+    <style>
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    div[data-testid="stNotification"] { padding: 0.75rem; margin-bottom: 1rem; }
+    </style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 2. GitHub Secrets & Setup
@@ -31,7 +39,7 @@ TODAY_DATE = datetime.now().date()
 # ==========================================
 @st.cache_data(ttl=60)
 def get_tasks():
-    # ดึงเฉพาะ issue ที่ state=open (เพื่อไม่ให้งานที่ถูกลบ/ปิดไปแล้วมาโผล่กวนใจ)
+    # Fetch only open issues to keep active management organized
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues?state=open&per_page=100"
     response = requests.get(url, headers=get_headers())
     return response.json() if response.status_code == 200 else []
@@ -151,7 +159,6 @@ if issues_only:
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_start, "FINISH": gantt_cutoff, "STAGE": "Elapsed", "_raw_start": start_date})
             gantt_data.append({"UNIQUE_TASK": unique_name, "TASK NAME": task['title'], "START": gantt_cutoff, "FINISH": gantt_finish, "STAGE": "Future", "_raw_start": start_date})
 
-# สรุป Dataframe
 df = pd.DataFrame(df_data).sort_values("_raw_start").reset_index(drop=True) if not pd.DataFrame(df_data).empty else pd.DataFrame(columns=["ID", "UNIQUE_TASK", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT", "_raw_start", "_raw_body"])
 df_gantt = pd.DataFrame(gantt_data).sort_values("_raw_start").reset_index(drop=True) if gantt_data else pd.DataFrame()
 
@@ -166,18 +173,18 @@ if task_filter != "All" and not df.empty:
 # ==========================================
 # 7. UI: Bulk Edit Save Button & Zoom Controls
 # ==========================================
-st.markdown("##### 🔎 จัดการมุมมองและการแก้ไข (Controls)")
-z_col1, z_col2, z_col3 = st.columns([1, 1, 4])
+st.markdown("##### 🔎 View & Editing Controls")
+z_col1, z_col2, z_col3 = st.columns([1.5, 1.5, 4])
 
 default_view_start = df["START"].min() - timedelta(days=2) if not df.empty else TODAY_DATE
 default_view_end = df["FINISH"].max() + timedelta(days=2) if not df.empty else TODAY_DATE + timedelta(days=30)
 
 with z_col1:
-    view_start = st.date_input("🗓️ ซูมตั้งแต่ (View Start)", value=default_view_start)
+    view_start = st.date_input("🗓️ Zoom View From", value=default_view_start)
 with z_col2:
-    view_end = st.date_input("🗓️ จนถึง (View End)", value=default_view_end)
+    view_end = st.date_input("🗓️ Zoom View To", value=default_view_end)
 
-# 💡 ระบบแจ้งเตือนและปุ่มบันทึกการ เพิ่ม/ลบ/แก้ไข (Bulk Edit)
+# Bulk Change tracking mechanisms via Streamlit State
 pending_changes = st.session_state.get("task_editor", {})
 edited_rows = pending_changes.get("edited_rows", {})
 added_rows = pending_changes.get("added_rows", [])
@@ -187,19 +194,17 @@ total_changes = len(edited_rows) + len(added_rows) + len(deleted_rows)
 
 if total_changes > 0:
     with z_col3:
-        st.warning(f"⚠️ คุณมีการเปลี่ยนแปลงที่ยังไม่ได้บันทึกทั้งหมด {total_changes} รายการ")
-        if st.button("💾 บันทึกไปยัง GitHub", type="primary"):
+        st.warning(f"⚠️ You have {total_changes} unsaved modifications pending.")
+        if st.button("💾 Save Changes to GitHub", type="primary"):
             has_error = False
             
-            with st.spinner("กำลังซิงค์ข้อมูล..."):
-                
-                # --- 1. จัดการการลบแถว (ปิด Issue) ---
+            with st.spinner("Syncing data updates with GitHub..."):
+                # 1. Processing Row Deletions (Closing Items)
                 for row_idx in deleted_rows:
                     issue_id = df["ID"].iloc[row_idx]
-                    payload = {"state": "closed"}
-                    requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
+                    requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json={"state": "closed"})
 
-                # --- 2. จัดการการเพิ่มแถวใหม่ (สร้าง Issue) ---
+                # 2. Processing Row Additions (New Issues)
                 for new_row in added_rows:
                     title = new_row.get("TASK NAME", "Untitled Task")
                     start = str(new_row.get("START", TODAY_DATE.strftime("%Y-%m-%d")))
@@ -210,14 +215,13 @@ if total_changes > 0:
                     payload = {"title": title, "body": body}
                     
                     if assignee_str.strip():
-                        # แยกชื่อด้วยลูกน้ำและตัดช่องว่าง เผื่อใส่หลายคน
                         payload["assignees"] = [a.strip() for a in assignee_str.split(",") if a.strip()]
                         
                     requests.post(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues", headers=get_headers(), json=payload)
 
-                # --- 3. จัดการการแก้ไขแถวเดิม ---
+                # 3. Processing Column Modifications
                 for row_idx, changes in edited_rows.items():
-                    if row_idx in deleted_rows: # ถ้าแถวนี้ถูกลบไปแล้ว ให้ข้ามไป
+                    if row_idx in deleted_rows:
                         continue
                         
                     issue_id = df["ID"].iloc[row_idx]
@@ -240,7 +244,7 @@ if total_changes > 0:
                         n_finish_date = datetime.strptime(new_finish_str, "%Y-%m-%d").date()
                         
                         if n_finish_date < n_start_date:
-                            st.error(f"❌ ตรวจพบข้อผิดพลาด: งาน '{current_title}' มีวันสิ้นสุดก่อนวันเริ่มต้น!")
+                            st.error(f"❌ Validation Failed: Task '{current_title}' has a Finish Date set before its Start Date!")
                             has_error = True
                             continue
                         
@@ -255,20 +259,19 @@ if total_changes > 0:
                         requests.patch(f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}", headers=get_headers(), json=payload)
             
             if not has_error:
-                st.success("✅ บันทึกข้อมูลทั้งหมดสำเร็จ!")
+                st.success("✅ Dashboard configuration synchronized perfectly!")
                 st.cache_data.clear()
                 st.rerun()
 
 # ==========================================
 # 8. Render Split-View UI
 # ==========================================
-st.info("💡 **คำแนะนำ:** เลื่อนเมาส์ไปที่ตารางเพื่อกดเพิ่มแถว (ไอคอน + มุมล่างซ้าย) หรือเลือกแถวแล้วกดปุ่ม Delete บนคีย์บอร์ดเพื่อลบงาน")
+st.info("💡 **Tip:** Use the table footer controls (`+` icon) to add rows. Select any row and press `Delete` on your keyboard to drop a task.")
 
 df_display = df.drop(columns=["UNIQUE_TASK", "_raw_start", "_raw_body"]) if not df.empty else pd.DataFrame(columns=["ID", "ASSIGNEE", "TASK NAME", "START", "FINISH", "DAYS", "% PLAN", "% ACT.", "STATUS", "% FUT"])
 
 ROW_HEIGHT = 35.5 
 HEADER_HEIGHT = 43 
-# เผื่อพื้นที่ให้ตารางเวลาว่างเปล่า
 EXACT_HEIGHT = int((len(df_display) * ROW_HEIGHT) + HEADER_HEIGHT) if len(df_display) > 0 else 150
 
 left_col, right_col = st.columns([0.45, 0.55])
@@ -279,11 +282,11 @@ with left_col:
         key="task_editor",
         hide_index=True,
         use_container_width=True,
-        num_rows="dynamic", # 👈 เปิดให้เพิ่ม/ลบ แถวได้
+        num_rows="dynamic",
         height=EXACT_HEIGHT if len(df_display) > 0 else None,
         column_config={
             "ID": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small", help="ใส่ GitHub Username หากมีหลายคนให้คั่นด้วยลูกน้ำ (,)"), # 👈 เปิดให้แก้ Assignee
+            "ASSIGNEE": st.column_config.TextColumn("ASSIGNEE", disabled=False, width="small", help="GitHub usernames separated by a comma (,)"),
             "TASK NAME": st.column_config.TextColumn("TASK NAME", disabled=False, width="medium"),
             "START": st.column_config.DateColumn("START", disabled=False, format="DD MMM YYYY"), 
             "FINISH": st.column_config.DateColumn("FINISH", disabled=False, format="DD MMM YYYY"), 
@@ -335,4 +338,4 @@ with right_col:
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     else:
-        st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>ไม่มีข้อมูลแสดงในกราฟ</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>No timeline metrics matching criteria.</div>", unsafe_allow_html=True)
