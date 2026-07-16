@@ -20,7 +20,6 @@ except Exception as e:
 def get_headers():
     return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
-# ฟังก์ชัน Helper สำหรับเปลี่ยนสถานะงาน
 def update_task_state(issue_id, new_state):
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_id}"
     res = requests.patch(url, headers=get_headers(), json={"state": new_state})
@@ -55,7 +54,8 @@ def calc_progress_from_checklist(body, status):
         return (checked / total) * 100
     return 100.0 if status == "COMPLETED" else 0.0
 
-TODAY = datetime.now()
+# ดึงวันที่ปัจจุบันแบบตัดเวลาทิ้ง (ป้องกันบั๊ก Delay)
+TODAY_DATE = datetime.now().date()
 
 # --- UI: Top Toolbar ---
 st.markdown("### 🏗️ BuildPM - Project Management Suite")
@@ -64,8 +64,7 @@ t_col1, t_col2, t_col3, t_col4 = st.columns([2.5, 1.5, 1.5, 1])
 with t_col1:
     search_query = st.text_input("🔍 Search tasks...", placeholder="พิมพ์ชื่อ Task...")
 with t_col2:
-    # เพิ่มตัวเลือก DISPLAY มุมมองต่างๆ
-    display_view = st.selectbox("☷ DISPLAY VIEW", ["Table & Gantt", "Kanban Board", "Dashboard Metrics"])
+    display_view = st.selectbox("☷ DISPLAY VIEW", ["Gantt & Table", "Kanban Board", "Dashboard Metrics"])
 with t_col3:
     task_filter = st.selectbox("▽ FILTER STATUS", ["All Tasks", "IN PROGRESS", "DELAY", "COMPLETED"])
 with t_col4:
@@ -85,25 +84,27 @@ if issues_only:
     for i, task in enumerate(issues_only):
         body = task.get('body', '')
         start_str, end_str = parse_dates_from_body(body, task.get('created_at'))
-        start_date = datetime.strptime(start_str, "%Y-%m-%d")
-        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+        
+        # แปลงเป็น Date Object
+        start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
         
         days = (end_date - start_date).days + 1
         
         state = task.get('state')
+        # [แก้ไข] เปรียบเทียบวันที่อย่างแม่นยำด้วย .date() เท่านั้น
         if state == 'closed':
             status = "COMPLETED"
-        elif TODAY > end_date:
+        elif TODAY_DATE > end_date:
             status = "DELAY"
         else:
             status = "IN PROGRESS"
             
         assignees = ", ".join([a['login'] for a in task.get('assignees', [])]) if task.get('assignees') else "Unassigned"
             
-        plan_pct = min(100.0, max(0.0, ((TODAY - start_date).days / days) * 100)) if days > 0 else 0
+        plan_pct = min(100.0, max(0.0, ((TODAY_DATE - start_date).days / days) * 100)) if days > 0 else 0
         act_pct = calc_progress_from_checklist(body, status)
 
-        # การใช้ % PLAN และ % ACT. ให้เกิดประโยชน์สูงสุด (หา Project Health)
         variance = act_pct - plan_pct
         if status == "COMPLETED":
             health = "🟢 Done"
@@ -118,12 +119,12 @@ if issues_only:
             "ID": task['number'],
             "TASK NAME": task['title'],
             "ASSIGNEE": assignees,
-            "START": start_date.date(),
-            "FINISH": end_date.date(),
+            "START": start_date,
+            "FINISH": end_date,
             "DAYS": days,
             "% PLAN": plan_pct,
             "% ACT.": act_pct, 
-            "HEALTH": health,  # คอลัมน์ใหม่
+            "HEALTH": health,
             "STATUS": status,
             "_raw_start": start_date,
             "_raw_body": body 
@@ -141,29 +142,48 @@ if issues_only:
 
     if not df.empty:
         # ==========================================
-        # 1. VIEW: TABLE & GANTT (มุมมองตาราง 2-Way Sync)
+        # 1. VIEW: GANTT & TABLE (มุมมอง PM มืออาชีพ)
         # ==========================================
-        if display_view == "Table & Gantt":
-            min_date = df_display["START"].min()
-            max_date = df_display["FINISH"].max()
-            total_project_days = max(1, (max_date - min_date).days)
+        if display_view == "Gantt & Table":
             
-            def generate_mini_gantt(start, finish, status):
-                TOTAL_BLOCKS = 15
-                start_offset = (start - min_date).days
-                duration = (finish - start).days
-                bar_len = max(1, int(round((duration / total_project_days) * TOTAL_BLOCKS)))
-                blank_before = min(TOTAL_BLOCKS - bar_len, int(round((start_offset / total_project_days) * TOTAL_BLOCKS)))
-                blank_after = max(0, TOTAL_BLOCKS - blank_before - bar_len)
-                bar_char = "🟩" if status == "COMPLETED" else "🟥" if status == "DELAY" else "🟦"
-                return "⬜" * blank_before + bar_char * bar_len + "⬜" * blank_after
-
-            df_display.insert(6, "TIMELINE", df_display.apply(
-                lambda x: generate_mini_gantt(x["START"], x["FINISH"], x["STATUS"]), axis=1
-            ))
-
-            st.markdown("**📋 Master Schedule** *(แก้ไขวันที่/สถานะในตารางเพื่อบันทึกไป GitHub อัตโนมัติ)*")
+            # --- 1.1 PROFESSIONAL GANTT CHART ---
+            st.markdown("##### 📅 Project Timeline")
             
+            # ปรับแต่งให้ Gantt Chart มีปฏิทินแสดงวันที่อยู่ด้านบนสุด เหมือน MS Project
+            fig = px.timeline(
+                df, 
+                x_start="START", 
+                x_end="FINISH", 
+                y="TASK NAME", 
+                color="STATUS",
+                text="% ACT.", # แสดงตัวเลข Progress บนแท่ง
+                color_discrete_map={
+                    "COMPLETED": "#00C853", 
+                    "IN PROGRESS": "#29B6F6", 
+                    "DELAY": "#FF5252"
+                }
+            )
+            fig.update_yaxes(autorange="reversed", title=None)
+            fig.update_traces(textposition='inside', textfont_color='white', texttemplate='%{text:.0f}%')
+            # ตั้งค่าแกน X ให้อยู่ด้านบน และแสดงปฏิทินรายวัน/เดือน
+            fig.update_xaxes(
+                side="top", 
+                title=None,
+                tickformat="%d %b %Y", # ตัวอย่าง: 16 Jul 2026
+                showgrid=True, gridcolor='LightGray'
+            )
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=40, b=0),
+                height=max(250, len(df) * 40 + 50),
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+            )
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            
+            st.markdown("---")
+            
+            # --- 1.2 DATA EDITOR TABLE ---
+            st.markdown("##### 📋 Master Schedule *(2-Way Sync with GitHub)*")
             edited_df = st.data_editor(
                 df_display,
                 key="task_editor",
@@ -175,8 +195,7 @@ if issues_only:
                     "START": st.column_config.DateColumn("START", format="YYYY-MM-DD"),
                     "FINISH": st.column_config.DateColumn("FINISH", format="YYYY-MM-DD"),
                     "% PLAN": st.column_config.ProgressColumn("% PLAN", format="%.0f%%", min_value=0, max_value=100),
-                    "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100),
-                    "TIMELINE": st.column_config.TextColumn("GANTT", help="สีเขียว=เสร็จ, สีฟ้า=กำลังทำ, สีแดง=ล่าช้า")
+                    "% ACT.": st.column_config.ProgressColumn("% ACT.", format="%.0f%%", min_value=0, max_value=100)
                 }
             )
 
@@ -208,7 +227,7 @@ if issues_only:
                 st.rerun()
 
         # ==========================================
-        # 2. VIEW: KANBAN BOARD (บอร์ดสไตล์ Trello)
+        # 2. VIEW: KANBAN BOARD
         # ==========================================
         elif display_view == "Kanban Board":
             st.markdown("### 🗂️ Project Kanban Board")
@@ -243,17 +262,15 @@ if issues_only:
                             update_task_state(row['ID'], "open")
 
         # ==========================================
-        # 3. VIEW: DASHBOARD (สรุปผลและกราฟ)
+        # 3. VIEW: DASHBOARD 
         # ==========================================
         elif display_view == "Dashboard Metrics":
-            # แถว KPI บนสุด
             st.subheader("📊 Executive Summary")
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
             kpi1.metric("Total Tasks", len(df))
             kpi2.metric("Completed", len(df[df["STATUS"] == "COMPLETED"]))
             kpi3.metric("Delayed", len(df[df["STATUS"] == "DELAY"]), delta_color="inverse")
             
-            # คำนวณ Overall Progress ของโปรเจกต์
             avg_act = df["% ACT."].mean()
             kpi4.metric("Overall Project Progress", f"{avg_act:.1f}%")
 
@@ -269,7 +286,6 @@ if issues_only:
                 
             with d_col2:
                 st.markdown("**เปรียบเทียบ % แผนงาน vs % ทำจริง (Plan vs Actual)**")
-                # นำ % PLAN กับ % ACT มาสร้างกราฟแท่งเปรียบเทียบ
                 fig_bar = px.bar(df, x="TASK NAME", y=["% PLAN", "% ACT."], barmode="group",
                                  labels={"value": "Percentage (%)", "variable": "Metric"})
                 fig_bar.update_layout(margin=dict(t=0, b=0, l=0, r=0), legend=dict(title=None, orientation="h", y=1.1))
@@ -280,14 +296,13 @@ if issues_only:
 else:
     st.info("ไม่มีงานในระบบ กดแถบด้านข้างเพื่อสร้างงานใหม่")
 
-
 # --- Sidebar: จัดการงาน ---
 with st.sidebar:
     st.header("➕ Quick Action")
     with st.form("new_task_form", clear_on_submit=True):
         new_task_title = st.text_input("Task Name")
-        start_d = st.date_input("Start Date", value=TODAY)
-        end_d = st.date_input("Finish Date", value=TODAY + timedelta(days=5))
+        start_d = st.date_input("Start Date", value=TODAY_DATE)
+        end_d = st.date_input("Finish Date", value=TODAY_DATE + timedelta(days=5))
         new_task_desc = st.text_area("Description (เพิ่ม checklist เช่น - [ ] งานย่อย 1)")
         
         if st.form_submit_button("Submit Task", type="primary", use_container_width=True):
